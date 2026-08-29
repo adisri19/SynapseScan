@@ -29,8 +29,14 @@ export async function fetchAllAiNarratives(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-    if (!res.ok) throw new Error(`API error calling ${path}`);
-    const json = await res.json();
+    const text = await res.text();
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = { error: text || 'An error occurred on the server.' };
+    }
+    if (!res.ok) throw new Error(`API error calling ${path}: ${json.error || text}`);
     return json.text || '';
   };
 

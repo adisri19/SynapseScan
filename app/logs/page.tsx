@@ -31,7 +31,13 @@ function LogsContent() {
         setLoading(true);
         setError(null);
         const response = await fetch('/api/logs');
-        const result = await response.json();
+        const text = await response.text();
+        let result;
+        try {
+          result = JSON.parse(text);
+        } catch {
+          result = { error: text || 'An error occurred on the server.' };
+        }
 
         if (!response.ok) {
           throw new Error(result.error || 'Failed to fetch ingestion log registry');
