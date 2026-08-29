@@ -11,6 +11,8 @@ import { DebtTrendsChart } from '../../components/dashboard/debt-trends-chart';
 import { ErrorBoundary } from '../../components/error-boundary';
 import { DashboardData } from '../../lib/types';
 import { generateAuditReport } from '../../lib/generate-report';
+import { fetchAllAiNarratives } from '../../lib/ai-report-narratives';
+import { ExportModal } from '../../components/ui/export-modal';
 
 function DashboardContent() {
   const searchParams = useSearchParams();
@@ -20,6 +22,34 @@ function DashboardContent() {
   const { tenantName, currentRunId, setCurrentRunId, dashboardData, setDashboardData } = useAppStore();
   const [loading, setLoading] = useState(!dashboardData || (runId !== null && runId !== currentRunId));
   const [error, setError] = useState<string | null>(null);
+  
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportStep, setExportStep] = useState('');
+
+  const handleExportReport = async () => {
+    if (!runId || !dashboardData) return;
+    setIsExporting(true);
+    try {
+      setExportStep('Fetching AI narratives...');
+      const narratives = await fetchAllAiNarratives(runId, dashboardData);
+
+      setExportStep('Building cover page...');
+      await new Promise(r => setTimeout(r, 400));
+
+      setExportStep('Rendering charts...');
+      await new Promise(r => setTimeout(r, 400));
+
+      setExportStep('Generating PDF...');
+      await generateAuditReport(dashboardData, narratives);
+
+      setExportStep('Done!');
+    } catch (err) {
+      console.error('Export failed:', err);
+      setExportStep('Export failed. Check console.');
+    } finally {
+      setTimeout(() => setIsExporting(false), 2000);
+    }
+  };
 
   useEffect(() => {
     if (!runId) {
@@ -117,7 +147,7 @@ function DashboardContent() {
         <span>Run Full Repos Audit</span>
       </button>
       <button
-        onClick={() => generateAuditReport(dashboardData)}
+        onClick={handleExportReport}
         className="inline-flex items-center justify-center gap-2 bg-transparent hover:bg-slate-800/40 text-slate-300 border border-[#1F2937] font-semibold rounded-lg px-4 py-2 text-xs transition-colors"
       >
         <svg
@@ -174,6 +204,8 @@ function DashboardContent() {
           </div>
         </ErrorBoundary>
       </div>
+
+      <ExportModal isOpen={isExporting} currentStep={exportStep} />
     </div>
   );
 }
