@@ -96,12 +96,40 @@ export interface ReviewFilters {
   endDate: string;
 }
 
-export interface SprintTicket {
-  id: number;
-  sprint: string;
-  priority: string;
-  priorityLabel: string;
-  title: string;
-  estimatedHours: number;
-  acceptanceCriteria: string[];
+export interface CodeChunk {
+  id?: string;
+  runId: string;
+  filePath: string;
+  chunkIndex: number;
+  startLine: number;
+  endLine: number;
+  content: string;
+  symbolName?: string;
+  symbolType?: 'function' | 'class' | 'interface' | 'method' | 'export' | 'block';
+  embedding?: number[];
+  score?: number;
+  metrics?: {
+    linesOfCode: number;
+    maxNestingDepth: number;
+    outdatedPatternsCount: number;
+    score?: 'A' | 'B' | 'C' | 'D' | 'F';
+  };
+}
+
+export interface GroundedContext {
+  runDetails: {
+    owner: string;
+    name: string;
+    url: string;
+    overallScore: string;
+    totalLoc: number;
+    avgComplexity: number;
+    duplicationRate: number;
+    estimatedDebtHours: number;
+    debtCategories: DebtCategories;
+  } | null;
+  topFiles: FileMetric[];
+  duplications: DuplicationBlock[];
+  relevantChunks: CodeChunk[];
+  query: string;
 }

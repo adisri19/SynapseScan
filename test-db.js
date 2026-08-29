@@ -24,9 +24,11 @@ if (!databaseUrl) {
   process.exit(1);
 }
 
+const isLocal = databaseUrl.includes('localhost') || databaseUrl.includes('127.0.0.1');
+
 const pool = new Pool({
   connectionString: databaseUrl,
-  ssl: { rejectUnauthorized: false }
+  ssl: isLocal ? false : { rejectUnauthorized: false }
 });
 
 async function main() {
