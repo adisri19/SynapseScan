@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { KpiCard } from '../ui/kpi-card';
 
@@ -22,6 +22,7 @@ export function MetricsGrid({
   runId
 }: MetricsGridProps) {
   const router = useRouter();
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
   const scoreColors = {
     A: 'text-emerald-400',
@@ -35,44 +36,12 @@ export function MetricsGrid({
 
   // Financial Cost calculation ($100/hr developer rate)
   const estimatedCost = estimatedDebtHours * 100;
+  const monthlyCompoundingCost = Math.round(estimatedCost * 0.15);
 
   return (
     <div className="space-y-6 w-full">
-      {/* Financial Cost of Technical Debt Banner (Highly visible, styled red/amber warning) */}
-      <div className="bg-red-500/5 hover:bg-red-500/10 border border-red-500/20 hover:border-red-500/30 rounded-xl p-5 shadow-xl relative overflow-hidden transition duration-150 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        {/* Pulsing red left border accent */}
-        <div className="absolute left-0 top-0 bottom-0 w-1 bg-red-500 status-dot" />
-        <div className="absolute top-0 right-0 w-48 h-48 bg-red-500/5 rounded-full blur-3xl pointer-events-none" />
-
-        <div className="flex items-start gap-4 min-w-0">
-          <div className="w-11 h-11 min-w-[44px] rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 shadow-lg shadow-red-950/20">
-            <svg className="w-5.5 h-5.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <div className="min-w-0">
-            <span className="text-[10px] font-mono font-bold text-red-400 uppercase tracking-widest block leading-none">
-              Financial Liability Exposure
-            </span>
-            <h3 className="text-white text-base md:text-lg font-bold font-sans tracking-tight mt-1.5 leading-snug">
-              Estimated Cost of Technical Debt: <span className="text-red-500 font-mono font-black">${estimatedCost.toLocaleString()}</span>
-            </h3>
-            <p className="text-slate-400 text-xs mt-1 leading-normal max-w-xl">
-              Calculated dynamically at a <span className="text-slate-300 font-mono font-bold">$100/hr</span> standard industry developer rate across your <span className="text-slate-300 font-mono font-bold">{estimatedDebtHours} hours</span> of outstanding code debt.
-            </p>
-          </div>
-        </div>
-
-        <button
-          onClick={() => router.push(`/review?runId=${runId}`)}
-          className="bg-red-500/10 hover:bg-red-500/20 active:bg-red-500/30 text-red-400 hover:text-red-300 text-xs font-semibold px-4 py-2.5 rounded-lg border border-red-500/20 transition shrink-0 self-start md:self-auto cursor-pointer"
-        >
-          View Debt Hotspots →
-        </button>
-      </div>
-
-      {/* KPI Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+      {/* KPI Cards Grid - Extended to 5 columns for perfect modular sizing */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
         {/* Code Quality Score */}
         <KpiCard
           label="Code Quality Score"
@@ -143,7 +112,84 @@ export function MetricsGrid({
             onClick: () => router.push(`/logs`)
           }}
         />
+
+        {/* Debt Liability Budget (Compact card trigger) */}
+        <KpiCard
+          label="Remediation Budget"
+          value={<span className="text-red-400">${estimatedCost.toLocaleString()}</span>}
+          icon={
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          }
+          iconBgClass="bg-red-500/10 border-red-500/20 text-red-400 shadow-sm"
+          cta={{
+            label: 'Explain Cost Breakdown →',
+            onClick: () => setIsModalOpen(true)
+          }}
+        />
       </div>
+
+      {/* Interactive Modal explaining the technical debt math */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#111827] border border-[#1F2937] rounded-2xl p-6 max-w-md w-full relative shadow-2xl overflow-hidden flex flex-col">
+            {/* Close cross */}
+            <button
+              onClick={() => setIsModalOpen(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white transition focus:outline-none"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+
+            <div className="border-b border-[#1F2937] pb-4 mb-4">
+              <span className="text-red-400 text-xs font-mono font-bold uppercase tracking-wider">Financial Modeling</span>
+              <h3 className="text-white text-lg font-bold font-sans mt-0.5">
+                Technical Debt Budget Breakdown
+              </h3>
+            </div>
+
+            <div className="space-y-4 text-sm font-sans text-slate-300 leading-relaxed">
+              <div className="bg-[#0B0F17] border border-slate-800 p-4 rounded-xl text-center">
+                <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest block leading-none">
+                  Calculated Liability
+                </span>
+                <span className="text-3xl font-mono font-black text-red-400 block mt-2">
+                  ${estimatedCost.toLocaleString()}
+                </span>
+              </div>
+
+              <div className="space-y-3 pt-2 text-xs md:text-sm">
+                <p>
+                  This codebase contains <strong className="text-white font-mono font-bold">{estimatedDebtHours} hours</strong> of outstanding technical debt based on calculated nesting layers, duplication overlaps, and syntax hot-spots.
+                </p>
+                <div className="flex justify-between items-center bg-[#0B0F17]/40 p-2.5 rounded-lg border border-slate-800/60 font-mono text-xs">
+                  <span className="text-slate-500">Developer Blended Rate</span>
+                  <span className="text-white font-bold">$100.00 / hr</span>
+                </div>
+                <div className="flex justify-between items-center bg-[#0B0F17]/40 p-2.5 rounded-lg border border-slate-800/60 font-mono text-xs">
+                  <span className="text-slate-500">Monthly Compounding Cost (15%)</span>
+                  <span className="text-red-400 font-bold">+${monthlyCompoundingCost.toLocaleString()} / mo</span>
+                </div>
+                <p className="text-slate-400 text-xs leading-normal pt-1">
+                  Leaving this debt unresolved results in a <strong className="text-slate-300">15% compounding velocity drag</strong>, progressively slowing down your team&apos;s feature delivery rate. Refactoring now eliminates this liability immediately!
+                </p>
+              </div>
+            </div>
+
+            <div className="border-t border-[#1F2937] pt-4 mt-6 flex justify-end shrink-0">
+              <button
+                onClick={() => setIsModalOpen(false)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold px-4 py-2.5 rounded-lg transition"
+              >
+                Close Breakdown
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
