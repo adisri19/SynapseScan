@@ -10,6 +10,7 @@ import { MetricsGrid } from '../../components/dashboard/metrics-grid';
 import { ComplexityChart } from '../../components/dashboard/complexity-chart';
 import { DebtDonutChart } from '../../components/dashboard/debt-donut-chart';
 import { DebtTrendsChart } from '../../components/dashboard/debt-trends-chart';
+import { WallOfFameShame } from '../../components/dashboard/wall-of-fame-shame';
 import { ErrorBoundary } from '../../components/error-boundary';
 import { DashboardData } from '../../lib/types';
 import { generateAuditReport } from '../../lib/generate-report';
@@ -221,6 +222,11 @@ function DashboardContent() {
           {/* Trends history Composed chart */}
           <div className="w-full">
             <DebtTrendsChart historicalRuns={historicalRuns} />
+          </div>
+
+          {/* Wall of Fame / Wall of Shame section */}
+          <div className="w-full">
+            <WallOfFameShame files={files} />
           </div>
         </ErrorBoundary>
       </div>
