@@ -20,15 +20,21 @@ export async function POST(req: NextRequest) {
     }
 
     let normalizedUrl = repoUrl.trim();
-    if (normalizedUrl.startsWith('http://')) {
+    if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+      const parts = normalizedUrl.split('/');
+      if (parts.length >= 2) {
+        normalizedUrl = 'https://github.com/' + normalizedUrl;
+      }
+    } else if (normalizedUrl.startsWith('http://')) {
       normalizedUrl = 'https://' + normalizedUrl.slice(7);
     }
+    
     if (normalizedUrl.startsWith('https://www.github.com/')) {
       normalizedUrl = 'https://github.com/' + normalizedUrl.slice(23);
     }
 
     if (!normalizedUrl.startsWith('https://github.com/')) {
-      return NextResponse.json({ error: 'Repository URL must start with https://github.com/' }, { status: 400 });
+      return NextResponse.json({ error: 'Repository URL must start with https://github.com/ or be in "owner/repo" format' }, { status: 400 });
     }
 
     let owner = '';

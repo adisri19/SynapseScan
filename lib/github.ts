@@ -2,10 +2,26 @@ export function parseGitHubUrl(url: string): { owner: string; repo: string; bran
   // Accepted formats: https://github.com/owner/repo, https://github.com/owner/repo/tree/branch, etc.
   try {
     let cleanUrl = url.trim();
-    if (cleanUrl.startsWith('http://')) {
+    
+    // If user entered only "owner/repo" or "owner/repo.git", prefix it to form a valid URL
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      const parts = cleanUrl.split('/');
+      if (parts.length >= 2) {
+        cleanUrl = 'https://github.com/' + cleanUrl;
+      } else {
+        throw new Error('Please enter a complete GitHub URL or "owner/repo" pattern.');
+      }
+    } else if (cleanUrl.startsWith('http://')) {
       cleanUrl = 'https://' + cleanUrl.slice(7);
     }
-    const parsed = new URL(cleanUrl);
+
+    let parsed: URL;
+    try {
+      parsed = new URL(cleanUrl);
+    } catch {
+      throw new Error('Please enter a valid absolute URL format.');
+    }
+
     if (parsed.hostname !== 'github.com' && parsed.hostname !== 'www.github.com') {
       throw new Error('Not a GitHub URL');
     }

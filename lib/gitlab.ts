@@ -6,10 +6,26 @@
 export function parseGitLabUrl(url: string): { owner: string; repo: string; branch: string } {
   try {
     let cleanUrl = url.trim();
-    if (cleanUrl.startsWith('http://')) {
+    
+    // If user entered only "owner/repo" or "owner/repo.git", prefix it to form a valid URL
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      const parts = cleanUrl.split('/');
+      if (parts.length >= 2) {
+        cleanUrl = 'https://gitlab.com/' + cleanUrl;
+      } else {
+        throw new Error('Please enter a complete GitLab URL or "owner/repo" pattern.');
+      }
+    } else if (cleanUrl.startsWith('http://')) {
       cleanUrl = 'https://' + cleanUrl.slice(7);
     }
-    const parsed = new URL(cleanUrl);
+
+    let parsed: URL;
+    try {
+      parsed = new URL(cleanUrl);
+    } catch {
+      throw new Error('Please enter a valid absolute URL format.');
+    }
+
     if (parsed.hostname !== 'gitlab.com' && parsed.hostname !== 'www.gitlab.com') {
       throw new Error('Not a GitLab URL');
     }

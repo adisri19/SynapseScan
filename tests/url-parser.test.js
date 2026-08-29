@@ -4,10 +4,25 @@ const url = require('url');
 function parseGitHubUrl(repoUrl) {
   try {
     let cleanUrl = repoUrl.trim();
-    if (cleanUrl.startsWith('http://')) {
+    
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      const parts = cleanUrl.split('/');
+      if (parts.length >= 2) {
+        cleanUrl = 'https://github.com/' + cleanUrl;
+      } else {
+        throw new Error('Please enter a complete GitHub URL or "owner/repo" pattern.');
+      }
+    } else if (cleanUrl.startsWith('http://')) {
       cleanUrl = 'https://' + cleanUrl.slice(7);
     }
-    const parsed = new URL(cleanUrl);
+
+    let parsed;
+    try {
+      parsed = new URL(cleanUrl);
+    } catch {
+      throw new Error('Please enter a valid absolute URL format.');
+    }
+
     if (parsed.hostname !== 'github.com' && parsed.hostname !== 'www.github.com') {
       throw new Error('Not a GitHub URL');
     }
@@ -37,10 +52,25 @@ function parseGitHubUrl(repoUrl) {
 function parseGitLabUrl(repoUrl) {
   try {
     let cleanUrl = repoUrl.trim();
-    if (cleanUrl.startsWith('http://')) {
+    
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      const parts = cleanUrl.split('/');
+      if (parts.length >= 2) {
+        cleanUrl = 'https://gitlab.com/' + cleanUrl;
+      } else {
+        throw new Error('Please enter a complete GitLab URL or "owner/repo" pattern.');
+      }
+    } else if (cleanUrl.startsWith('http://')) {
       cleanUrl = 'https://' + cleanUrl.slice(7);
     }
-    const parsed = new URL(cleanUrl);
+
+    let parsed;
+    try {
+      parsed = new URL(cleanUrl);
+    } catch {
+      throw new Error('Please enter a valid absolute URL format.');
+    }
+
     if (parsed.hostname !== 'gitlab.com' && parsed.hostname !== 'www.gitlab.com') {
       throw new Error('Not a GitLab URL');
     }
@@ -91,6 +121,14 @@ function runTests() {
     {
       input: 'https://github.com/owner/repo/tree/feature/auth',
       expected: { owner: 'owner', repo: 'repo', branch: 'feature/auth' }
+    },
+    {
+      input: 'adisri19/SynapseScan',
+      expected: { owner: 'adisri19', repo: 'SynapseScan', branch: 'main' }
+    },
+    {
+      input: 'adisri19/SynapseScan.git',
+      expected: { owner: 'adisri19', repo: 'SynapseScan', branch: 'main' }
     }
   ];
 
@@ -109,6 +147,10 @@ function runTests() {
     },
     {
       input: 'http://gitlab.com/owner/repo.git',
+      expected: { owner: 'owner', repo: 'repo', branch: 'main' }
+    },
+    {
+      input: 'owner/repo',
       expected: { owner: 'owner', repo: 'repo', branch: 'main' }
     }
   ];
