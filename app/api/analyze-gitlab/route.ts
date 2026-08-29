@@ -159,6 +159,19 @@ export async function POST(req: NextRequest) {
       throw e;
     }
 
+    // Limit to top 35 files to prevent Vercel Serverless Function Timeout (10s)
+    const maxFilesLimit = 35;
+    if (filePaths.length > maxFilesLimit) {
+      filePaths = filePaths
+        .sort((a, b) => {
+          const extA = a.split('.').pop()?.toLowerCase() || '';
+          const extB = b.split('.').pop()?.toLowerCase() || '';
+          const priority = (ext: string) => ['tsx', 'ts', 'jsx', 'js'].indexOf(ext) !== -1 ? 1 : 0;
+          return priority(extB) - priority(extA);
+        })
+        .slice(0, maxFilesLimit);
+    }
+
     const downloadedFiles: Array<{ path: string; content: string }> = [];
     const limit = 20;
     
