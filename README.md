@@ -61,7 +61,21 @@ webhook_configs (id, repo_url, secret_token, events, created_at)
 ### Prerequisites
 
 *   Node.js 18.x or later
-*   PostgreSQL instance (e.g., Supabase or local Docker)
+*   Docker & Docker Compose (for database setup)
+
+### Quick Database Setup (Dockerized)
+
+SynapseScan contains a fully configured Docker Compose configuration that spins up a local PostgreSQL instance and automatically initializes the database tables, indices, and default seed organizations from `schema.sql` on first boot.
+
+1.  Start the database container:
+    ```bash
+    docker compose up -d
+    ```
+
+2.  Once running, your local `DATABASE_URL` will be:
+    ```env
+    DATABASE_URL="postgresql://postgres:Tech-Debt%408564@localhost:5432/synapsescan"
+    ```
 
 ### Installation
 
@@ -72,16 +86,14 @@ webhook_configs (id, repo_url, secret_token, events, created_at)
 
 2.  Configure environment variables in `.env.local` inside the root directory:
     ```env
-    DATABASE_URL="postgresql://user:password@host:6543/postgres"
+    DATABASE_URL="postgresql://postgres:Tech-Debt%408564@localhost:5432/synapsescan"
     GITHUB_TOKEN="your_optional_github_token_classic"
     GITLAB_TOKEN="your_optional_gitlab_private_token"
     NEXT_PUBLIC_APP_URL="http://localhost:3000"
     ```
-    *Note: If your database password contains special characters like `@`, make sure to percent-encode it as `%40` inside the connection string to avoid connection parsing errors.*
+    *Note: The password `Tech-Debt@8564` must contain percent-encoded `%40` instead of `@` in the Next.js connection string to parse correctly.*
 
-3.  Apply migrations using your PostgreSQL console or client to load `schema.sql`.
-
-4.  Boot up the local development server:
+3.  Boot up the local development server:
     ```bash
     npm run dev
     ```

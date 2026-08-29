@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: synapsescan-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Tech-Debt@8564
+      POSTGRES_DB: synapsescan
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Automatically initializes the schema on first run
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    restart: always
+
+volumes:
+  postgres_data:
+    driver: local
