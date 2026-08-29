@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { parseGitHubUrl, fetchRepositoryTree, downloadFileContents } from '../../../lib/github';
-import { calculateNestingDepth, detectDuplications, scanOutdatedPatterns, scoreCodebase } from '../../../lib/analyzer';
+import { 
+  detectDuplications, 
+  evaluateChunkWithRAG, 
+  reduceChunkEvaluationsToFileGrade, 
+  reduceFileResultsToRepositoryScore,
+  FileAnalysisResult
+} from '../../../lib/analyzer';
 import { query, pool } from '../../../lib/db';
-import { DashboardData } from '../../../lib/types';
+import { DashboardData, CodeChunk } from '../../../lib/types';
 import { indexRepositoryChunks } from '../../../lib/rag';
+import { chunkCodeFile } from '../../../lib/chunker';
 
 export const maxDuration = 90;
 
@@ -169,8 +176,8 @@ export async function POST(req: NextRequest) {
         .sort((a, b) => {
           const extA = a.split('.').pop()?.toLowerCase() || '';
           const extB = b.split('.').pop()?.toLowerCase() || '';
-          // Prioritize rich source formats: tsx/ts/jsx/js
-          const priority = (ext: string) => ['tsx', 'ts', 'jsx', 'js'].indexOf(ext) !== -1 ? 1 : 0;
+          // Prioritize rich source formats: tsx/ts/jsx/js/py/java
+          const priority = (ext: string) => ['tsx', 'ts', 'jsx', 'js', 'py', 'java', 'go', 'rs', 'cs', 'cpp'].indexOf(ext) !== -1 ? 1 : 0;
           return priority(extB) - priority(extA);
         })
         .slice(0, maxFilesLimit);
@@ -204,38 +211,75 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No valid codebase files found or downloaded.' }, { status: 400 });
     }
 
-    // Calculate file statistics
-    const filesStats = downloadedFiles.map(file => {
-      const loc = file.content.split('\n').length;
-      const nestingDepth = calculateNestingDepth(file.content);
-      const outdatedCount = scanOutdatedPatterns(file.content);
-
-      return {
-        path: file.path,
-        loc,
-        nestingDepth,
-        outdatedCount,
-        content: file.content
-      };
-    });
-
+    // Duplication Analysis
     const duplicationsList = detectDuplications(downloadedFiles);
-
     const duplicatedLines = duplicationsList.reduce((sum, dup) => {
       return sum + (dup.lineCount * dup.fileOccurrences.length);
     }, 0);
-    const totalLines = filesStats.reduce((sum, f) => sum + f.loc, 0);
+    const totalLines = downloadedFiles.reduce((sum, f) => sum + f.content.split('\n').length, 0);
     const duplicationRate = totalLines > 0 ? (duplicatedLines / totalLines) * 100 : 0;
 
-    const scorecard = scoreCodebase(filesStats, duplicationRate);
-
-    // 3. Database Transaction
+    // First indexing pass: store chunks into DB for RAG dependency lookup
     const dbClient = await pool.connect();
+    let tempRunId = '';
     try {
       await dbClient.query('BEGIN');
+      const tempRepoRes = await dbClient.query(
+        `INSERT INTO repositories (tenant_id, url, owner, name, updated_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (url) DO UPDATE SET owner = $3, name = $4, updated_at = NOW()
+         RETURNING id`,
+        [defaultTenantId, cleanUrl, owner, repo]
+      );
+      const repositoryId = tempRepoRes.rows[0].id;
 
-      // Upsert Repository
-      const repoResult = await dbClient.query(
+      const tempRunRes = await dbClient.query(
+        `INSERT INTO analysis_runs (tenant_id, repository_id, overall_score, total_loc, avg_complexity, duplication_rate, debt_categories, estimated_debt_hours)
+         VALUES ($1, $2, 'A', $3, 0, $4, '{}'::jsonb, 0)
+         RETURNING id`,
+        [defaultTenantId, repositoryId, totalLines, duplicationRate]
+      );
+      tempRunId = tempRunRes.rows[0].id;
+      
+      await indexRepositoryChunks(dbClient, tempRunId, downloadedFiles);
+      await dbClient.query('COMMIT');
+    } catch (err) {
+      await dbClient.query('ROLLBACK');
+      throw err;
+    } finally {
+      dbClient.release();
+    }
+
+    // MAP & REDUCE PIPELINE
+    const fileAnalysisResults: FileAnalysisResult[] = [];
+
+    for (const file of downloadedFiles) {
+      if (controller.signal.aborted) {
+        throw new Error('Analysis timeout');
+      }
+
+      // AST-based Chunking
+      const fileChunks: CodeChunk[] = chunkCodeFile(file.path, file.content);
+
+      // Map Phase: Evaluate each chunk with RAG-grounded dependency context
+      const chunkEvaluations = await Promise.all(
+        fileChunks.map(chunk => evaluateChunkWithRAG(chunk, tempRunId))
+      );
+
+      // Reduce Phase (File Level): Rollup chunk evaluations to FileGrade
+      const fileResult = reduceChunkEvaluationsToFileGrade(file.path, chunkEvaluations, file.content);
+      fileAnalysisResults.push(fileResult);
+    }
+
+    // Reduce Phase (Repository Level): Rollup file results to OverallRepositoryScore
+    const scorecard = reduceFileResultsToRepositoryScore(fileAnalysisResults, duplicationRate);
+
+    // Final Database Persistence
+    const mainDbClient = await pool.connect();
+    try {
+      await mainDbClient.query('BEGIN');
+
+      const repoResult = await mainDbClient.query(
         `INSERT INTO repositories (tenant_id, url, owner, name, updated_at)
          VALUES ($1, $2, $3, $4, NOW())
          ON CONFLICT (url) DO UPDATE SET owner = $3, name = $4, updated_at = NOW()
@@ -244,27 +288,27 @@ export async function POST(req: NextRequest) {
       );
       const repositoryId = repoResult.rows[0].id;
 
-      // Insert Analysis Run
-      const runResult = await dbClient.query(
-        `INSERT INTO analysis_runs (tenant_id, repository_id, overall_score, total_loc, avg_complexity, duplication_rate, debt_categories, estimated_debt_hours)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      // Update Analysis Run with Map-Reduce Scores
+      const runResult = await mainDbClient.query(
+        `UPDATE analysis_runs 
+         SET overall_score = $1, total_loc = $2, avg_complexity = $3, duplication_rate = $4, debt_categories = $5, estimated_debt_hours = $6
+         WHERE id = $7
          RETURNING id, created_at`,
         [
-          defaultTenantId, 
-          repositoryId, 
           scorecard.overallGrade, 
           scorecard.totalLoc, 
           scorecard.avgComplexity, 
           scorecard.duplicationRate, 
           JSON.stringify(scorecard.debtCategories),
-          scorecard.estimatedDebtHours
+          scorecard.estimatedDebtHours,
+          tempRunId
         ]
       );
       const runId = runResult.rows[0].id;
 
       // Bulk Insert File Metrics
       for (const file of scorecard.files) {
-        await dbClient.query(
+        await mainDbClient.query(
           `INSERT INTO file_metrics (run_id, file_path, lines_of_code, max_nesting_depth, score, outdated_patterns_count, priority_score, review_status, recommended_action)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
@@ -283,27 +327,24 @@ export async function POST(req: NextRequest) {
 
       // Bulk Insert Duplications
       for (const dup of duplicationsList) {
-        await dbClient.query(
+        await mainDbClient.query(
           `INSERT INTO duplications (run_id, block_hash, line_count, file_occurrences)
            VALUES ($1, $2, $3, $4)`,
           [runId, dup.blockHash, dup.lineCount, JSON.stringify(dup.fileOccurrences)]
         );
       }
 
-      // Index Codebase Chunks for RAG Retrieval
-      await indexRepositoryChunks(dbClient, runId, downloadedFiles);
-
       // Add Ingestion Session Row with status done
-      await dbClient.query(
+      await mainDbClient.query(
         `INSERT INTO ingestion_sessions (tenant_id, repository_id, status, progress_step, progress_pct, triggered_by, completed_at)
          VALUES ($1, $2, 'done', 'Finalized', 100, $3, NOW())`,
         [defaultTenantId, repositoryId, triggeredBy]
       );
 
-      await dbClient.query('COMMIT');
+      await mainDbClient.query('COMMIT');
 
       // Fetch historical runs
-      const historicalQuery = await dbClient.query(
+      const historicalQuery = await mainDbClient.query(
         `SELECT id, overall_score, avg_complexity, duplication_rate, created_at 
          FROM analysis_runs 
          WHERE repository_id = $1 
@@ -345,10 +386,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ cached: false, success: true, data: responseData }, { status: 200 });
 
     } catch (dbError) {
-      await dbClient.query('ROLLBACK');
+      await mainDbClient.query('ROLLBACK');
       throw dbError;
     } finally {
-      dbClient.release();
+      mainDbClient.release();
     }
 
   } catch (error: any) {

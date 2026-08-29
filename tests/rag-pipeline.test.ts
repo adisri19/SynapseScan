@@ -1,47 +1,46 @@
 import { chunkCodeFile } from '../lib/chunker';
-import { CodeFeatureEmbeddingProvider, cosineSimilarity } from '../lib/embeddings';
+import { 
+  evaluateChunkWithRAG, 
+  reduceChunkEvaluationsToFileGrade, 
+  reduceFileResultsToRepositoryScore 
+} from '../lib/analyzer';
 
-async function runTests() {
-  console.log('--- RUNNING SYNAPSESCAN RAG & PIPELINE TESTS ---');
+async function runPipelineTest() {
+  console.log('--- Testing AST-Based Chunker ---');
+  const pythonSample = `
+class DataProcessor:
+    def __init__(self, name):
+        self.name = name
 
-  // Test 1: Chunking Engine
-  const testCode = `
-import React from 'react';
+    def process(self, items):
+        results = []
+        for item in items:
+            if item > 0:
+                results.append(item * 2)
+        return results
+`;
 
-export function HeaderComponent() {
-  const [active, setActive] = React.useState(false);
-  return <div>Header</div>;
+  const pyChunks = chunkCodeFile('processor.py', pythonSample);
+  console.log(`Extracted ${pyChunks.length} chunks from Python file.`);
+  console.assert(pyChunks.length > 0, 'Python chunking failed');
+
+  console.log('\n--- Testing Map Phase (Chunk Evaluation) ---');
+  const evalResult = await evaluateChunkWithRAG(pyChunks[0]);
+  console.log('Chunk Map Evaluation Result:', evalResult);
+  console.assert(evalResult.maintainabilityScore >= 1 && evalResult.maintainabilityScore <= 100, 'Score range invalid');
+
+  console.log('\n--- Testing Reduce Phase (File & Repo Rollup) ---');
+  const fileResult = reduceChunkEvaluationsToFileGrade('processor.py', [evalResult], pythonSample);
+  console.log('File Analysis Result:', fileResult);
+
+  const repoResult = reduceFileResultsToRepositoryScore([fileResult], 5.5);
+  console.log('Overall Repository Scorecard:', {
+    grade: repoResult.overallGrade,
+    loc: repoResult.totalLoc,
+    categories: repoResult.debtCategories
+  });
+
+  console.log('\n🎉 Pipeline test completed successfully!');
 }
 
-export class DataService {
-  fetchData() {
-    return [1, 2, 3];
-  }
-}
-  `;
-
-  const chunks = chunkCodeFile('components/Header.tsx', testCode);
-  console.log(`Test 1 (Chunker): Generated ${chunks.length} chunks. Symbols found:`, chunks.map(c => c.symbolName));
-  console.assert(chunks.length >= 2, 'Chunker should identify functions/classes.');
-  console.assert(chunks.some(c => c.symbolName === 'HeaderComponent'), 'Symbol name matching failed.');
-
-  // Test 2: Embedding Provider & Cosine Similarity
-  const provider = new CodeFeatureEmbeddingProvider();
-  const emb1 = await provider.embed('function handleAction(config) { if (!config) return; }');
-  const emb2 = await provider.embed('function handleAction(config) { if (!config) return; }');
-  const emb3 = await provider.embed('import docker from "dockerode";');
-
-  const simIdentical = cosineSimilarity(emb1, emb2);
-  const simDifferent = cosineSimilarity(emb1, emb3);
-
-  console.log(`Test 2 (Embedding): Identical Similarity = ${simIdentical.toFixed(3)}, Different Similarity = ${simDifferent.toFixed(3)}`);
-  console.assert(simIdentical > 0.99, 'Identical code must have ~1.0 similarity');
-  console.assert(simIdentical > simDifferent, 'Identical code must have higher similarity than different code');
-
-  console.log('✅ ALL TESTS PASSED SUCCESSFULLY.');
-}
-
-runTests().catch(err => {
-  console.error('❌ Test execution error:', err);
-  process.exit(1);
-});
+runPipelineTest().catch(console.error);

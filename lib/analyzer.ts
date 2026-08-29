@@ -1,6 +1,300 @@
 import crypto from 'crypto';
-import { DuplicationBlock, FileMetric, DebtCategories } from './types';
+import { CodeChunk, DuplicationBlock, FileMetric, DebtCategories } from './types';
+import { retrieveRelevantChunks, formatRagContext } from './rag';
 
+export interface ChunkLLMEvaluation {
+  chunkIndex: number;
+  filePath: string;
+  maintainabilityScore: number; // 1 - 100
+  complexityScore: number;       // 1 - 100
+  securityScore: number;         // 1 - 100
+  reasoning: string;
+  identifiedIssues: string[];
+}
+
+export interface FileAnalysisResult {
+  filePath: string;
+  linesOfCode: number;
+  maxNestingDepth: number;
+  score: 'A' | 'B' | 'C' | 'D' | 'F';
+  numericalScore: number; // 0 - 100
+  outdatedPatternsCount: number;
+  priorityScore: number;
+  reviewStatus: 'passed' | 'flagged' | 'needs_refactor';
+  recommendedAction: string;
+  chunkEvaluations: ChunkLLMEvaluation[];
+}
+
+export interface ScorecardResult {
+  overallGrade: 'A' | 'B' | 'C' | 'D' | 'F';
+  totalLoc: number;
+  avgComplexity: number;
+  duplicationRate: number;
+  estimatedDebtHours: number;
+  debtCategories: DebtCategories;
+  files: FileMetric[];
+  fileResults?: FileAnalysisResult[];
+}
+
+/**
+ * MAP PHASE SYSTEM PROMPT
+ * Structured system prompt instructing the LLM to score maintainability, complexity,
+ * and security on a 1-100 scale using retrieved RAG dependency context.
+ */
+export const CHUNK_EVALUATION_SYSTEM_PROMPT = `
+You are an expert static analysis engine and code auditor.
+Evaluate the provided source code chunk in light of its dependent code context.
+
+CRITICAL INSTRUCTIONS:
+1. Score each metric strictly on a scale from 1 to 100:
+   - maintainabilityScore (1 = unmaintainable, 100 = perfectly structured & clean)
+   - complexityScore (1 = extremely high cognitive/cyclomatic complexity, 100 = clean & linear)
+   - securityScore (1 = severe vulnerabilities present, 100 = highly secure & sanitized)
+2. Consider context from dependent/related chunks when analyzing symbols and imports.
+3. Output strictly valid JSON matching this schema:
+{
+  "maintainabilityScore": number,
+  "complexityScore": number,
+  "securityScore": number,
+  "reasoning": "Concise architectural explanation (2-3 sentences)",
+  "identifiedIssues": ["Issue 1", "Issue 2"]
+}
+`;
+
+/**
+ * MAP PHASE: Evaluates an individual code chunk using LLM reasoning + RAG retrieved context
+ */
+export async function evaluateChunkWithRAG(
+  chunk: CodeChunk,
+  runId?: string,
+  groqApiKey?: string
+): Promise<ChunkLLMEvaluation> {
+  let contextSnippet = 'No additional dependent RAG chunks retrieved.';
+
+  if (runId) {
+    try {
+      const searchTerms = `${chunk.symbolName || ''} ${chunk.filePath}`.trim();
+      const dependentChunks = await retrieveRelevantChunks(searchTerms, runId, 3, chunk.filePath);
+      const otherChunks = dependentChunks.filter(c => c.chunkIndex !== chunk.chunkIndex);
+      if (otherChunks.length > 0) {
+        contextSnippet = formatRagContext(otherChunks);
+      }
+    } catch (e) {
+      console.warn('RAG retrieval fallback for chunk evaluation:', e);
+    }
+  }
+
+  const promptText = `
+[TARGET CHUNK TO EVALUATE]
+File: ${chunk.filePath} (Lines ${chunk.startLine}-${chunk.endLine})
+Symbol: ${chunk.symbolType || 'block'} ${chunk.symbolName || ''}
+\`\`\`
+${chunk.content}
+\`\`\`
+
+[RAG DEPENDENCY CONTEXT]
+${contextSnippet}
+`;
+
+  const apiKey = groqApiKey || process.env.GROQ_API_KEY;
+
+  if (apiKey) {
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [
+            { role: 'system', content: CHUNK_EVALUATION_SYSTEM_PROMPT },
+            { role: 'user', content: promptText }
+          ],
+          temperature: 0.1,
+          response_format: { type: 'json_object' }
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const contentStr = data.choices?.[0]?.message?.content;
+        if (contentStr) {
+          const parsed = JSON.parse(contentStr);
+          return {
+            chunkIndex: chunk.chunkIndex,
+            filePath: chunk.filePath,
+            maintainabilityScore: Math.min(100, Math.max(1, Number(parsed.maintainabilityScore) || 75)),
+            complexityScore: Math.min(100, Math.max(1, Number(parsed.complexityScore) || 75)),
+            securityScore: Math.min(100, Math.max(1, Number(parsed.securityScore) || 85)),
+            reasoning: parsed.reasoning || 'Evaluated via Map-Reduce AI engine.',
+            identifiedIssues: Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : []
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('Groq LLM Map Evaluation error, falling back to deterministic AST heuristic:', err);
+    }
+  }
+
+  // Fallback heuristic scoring if Groq API key is omitted or fails
+  const loc = chunk.content.split('\n').length;
+  const nesting = (chunk.content.match(/\{/g) || []).length;
+  const maintainability = Math.max(30, 95 - loc);
+  const complexity = Math.max(20, 90 - nesting * 4);
+  const security = chunk.content.includes('eval(') || chunk.content.includes('innerHTML') ? 40 : 88;
+
+  return {
+    chunkIndex: chunk.chunkIndex,
+    filePath: chunk.filePath,
+    maintainabilityScore: maintainability,
+    complexityScore: complexity,
+    securityScore: security,
+    reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${nesting}.`,
+    identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : []
+  };
+}
+
+/**
+ * REDUCE PHASE: Rolls up chunk-level LLM scores to generate FileGrade and OverallRepositoryScore
+ */
+export function reduceChunkEvaluationsToFileGrade(
+  filePath: string,
+  chunkEvaluations: ChunkLLMEvaluation[],
+  fileContent: string
+): FileAnalysisResult {
+  const loc = fileContent.split('\n').length;
+  const nestingDepth = calculateNestingDepth(fileContent);
+
+  if (chunkEvaluations.length === 0) {
+    return {
+      filePath,
+      linesOfCode: loc,
+      maxNestingDepth: nestingDepth,
+      score: 'A',
+      numericalScore: 90,
+      outdatedPatternsCount: 0,
+      priorityScore: 10,
+      reviewStatus: 'passed',
+      recommendedAction: 'No action needed',
+      chunkEvaluations: []
+    };
+  }
+
+  // Weighted average across maintainability (40%), complexity (35%), and security (25%)
+  const totalMaintainability = chunkEvaluations.reduce((sum, c) => sum + c.maintainabilityScore, 0);
+  const totalComplexity = chunkEvaluations.reduce((sum, c) => sum + c.complexityScore, 0);
+  const totalSecurity = chunkEvaluations.reduce((sum, c) => sum + c.securityScore, 0);
+
+  const avgM = totalMaintainability / chunkEvaluations.length;
+  const avgC = totalComplexity / chunkEvaluations.length;
+  const avgS = totalSecurity / chunkEvaluations.length;
+
+  const compositeScore = Math.round((avgM * 0.40) + (avgC * 0.35) + (avgS * 0.25));
+
+  let grade: 'A' | 'B' | 'C' | 'D' | 'F' = 'A';
+  if (compositeScore >= 85) grade = 'A';
+  else if (compositeScore >= 70) grade = 'B';
+  else if (compositeScore >= 55) grade = 'C';
+  else if (compositeScore >= 40) grade = 'D';
+  else grade = 'F';
+
+  let reviewStatus: 'passed' | 'flagged' | 'needs_refactor' = 'passed';
+  if (grade === 'F' || grade === 'D') reviewStatus = 'flagged';
+  else if (grade === 'C') reviewStatus = 'needs_refactor';
+
+  const priorityScore = Math.round((100 - compositeScore) * 10 + loc * 0.5);
+
+  let recommendedAction = 'No action needed';
+  if (grade === 'F') recommendedAction = 'Immediate refactor required — high risk technical debt';
+  else if (grade === 'D') recommendedAction = 'Schedule refactor in upcoming sprint';
+  else if (grade === 'C') recommendedAction = 'Simplify cognitive complexity and abstract nested logic';
+  else if (grade === 'B') recommendedAction = 'Minor cleanups and documentation updates';
+
+  const outdatedPatternsCount = chunkEvaluations.reduce((sum, c) => sum + c.identifiedIssues.length, 0);
+
+  return {
+    filePath,
+    linesOfCode: loc,
+    maxNestingDepth: nestingDepth,
+    score: grade,
+    numericalScore: compositeScore,
+    outdatedPatternsCount,
+    priorityScore,
+    reviewStatus,
+    recommendedAction,
+    chunkEvaluations
+  };
+}
+
+/**
+ * REDUCE PHASE (Repository Level): Aggregates all file analysis results into final OverallRepositoryScore
+ */
+export function reduceFileResultsToRepositoryScore(
+  fileResults: FileAnalysisResult[],
+  duplicationRate = 0
+): ScorecardResult {
+  const totalLoc = fileResults.reduce((sum, f) => sum + f.linesOfCode, 0);
+  const totalPriorityScore = fileResults.reduce((sum, f) => sum + f.priorityScore, 0);
+
+  const avgNumericalScore = fileResults.length > 0
+    ? fileResults.reduce((sum, f) => sum + f.numericalScore, 0) / fileResults.length
+    : 90;
+
+  const avgComplexity = fileResults.length > 0
+    ? fileResults.reduce((sum, f) => sum + f.maxNestingDepth, 0) / fileResults.length
+    : 0;
+
+  let overallGrade: 'A' | 'B' | 'C' | 'D' | 'F' = 'A';
+  if (avgNumericalScore >= 85) overallGrade = 'A';
+  else if (avgNumericalScore >= 70) overallGrade = 'B';
+  else if (avgNumericalScore >= 55) overallGrade = 'C';
+  else if (avgNumericalScore >= 40) overallGrade = 'D';
+  else overallGrade = 'F';
+
+  const estimatedDebtHours = Math.round(totalPriorityScore / 250);
+
+  const securityMetric = Math.min(100, fileResults.filter(f => f.score === 'D' || f.score === 'F').length * 20);
+  const maintainabilityMetric = Math.min(100, Math.round((100 - avgNumericalScore) * 1.2));
+
+  const debtCategories: DebtCategories = {
+    security: parseFloat(securityMetric.toFixed(2)),
+    maintainability: parseFloat(maintainabilityMetric.toFixed(2)),
+    duplication: parseFloat(Math.min(100, duplicationRate).toFixed(2)),
+    coverage: 0
+  };
+
+  const fileMetrics: FileMetric[] = fileResults.map(f => ({
+    id: '',
+    runId: '',
+    filePath: f.filePath,
+    linesOfCode: f.linesOfCode,
+    maxNestingDepth: f.maxNestingDepth,
+    score: f.score,
+    outdatedPatternsCount: f.outdatedPatternsCount,
+    priorityScore: f.priorityScore,
+    reviewStatus: f.reviewStatus,
+    recommendedAction: f.recommendedAction
+  }));
+
+  fileMetrics.sort((a, b) => b.priorityScore - a.priorityScore);
+
+  return {
+    overallGrade,
+    totalLoc,
+    avgComplexity: parseFloat(avgComplexity.toFixed(2)),
+    duplicationRate: parseFloat(duplicationRate.toFixed(2)),
+    estimatedDebtHours,
+    debtCategories,
+    files: fileMetrics,
+    fileResults
+  };
+}
+
+/**
+ * Legacy AST Nesting Depth Helper preserved for structural fallback calculations
+ */
 export function calculateNestingDepth(code: string): number {
   const cleanCode = code
     .replace(/\/\/[^\n]*/g, '')
@@ -63,7 +357,7 @@ export function detectDuplications(files: Array<{ path: string; content: string 
   for (const [hash, occurrences] of Object.entries(hashToOccurrences)) {
     if (occurrences.length >= 2) {
       duplications.push({
-        runId: '', // populated at DB level
+        runId: '',
         blockHash: hash,
         lineCount: windowSize,
         fileOccurrences: occurrences
@@ -76,122 +370,45 @@ export function detectDuplications(files: Array<{ path: string; content: string 
 
 export function scanOutdatedPatterns(code: string): number {
   let count = 0;
-
   const varMatches = code.match(/\bvar\s+/g);
-  if (varMatches) {
-    count += varMatches.length;
-  }
-
+  if (varMatches) count += varMatches.length;
   const consoleMatches = code.match(/console\.log\s*\(/g);
-  if (consoleMatches) {
-    count += consoleMatches.length;
-  }
-
+  if (consoleMatches) count += consoleMatches.length;
   const callbackReg = /\bcallback\b.*function|function.*\bcallback\b/gi;
   const callbackMatches = code.match(callbackReg);
-  if (callbackMatches) {
-    count += callbackMatches.length;
-  }
-
+  if (callbackMatches) count += callbackMatches.length;
   return count;
-}
-
-export interface ScorecardResult {
-  overallGrade: 'A' | 'B' | 'C' | 'D' | 'F';
-  totalLoc: number;
-  avgComplexity: number;
-  duplicationRate: number;
-  estimatedDebtHours: number;
-  debtCategories: DebtCategories;
-  files: FileMetric[];
 }
 
 export function scoreCodebase(
   files: Array<{ path: string; loc: number; nestingDepth: number; outdatedCount: number }>,
   duplicationRate: number = 0
 ): ScorecardResult {
-  let totalPriorityScore = 0;
+  const dummyResults: FileAnalysisResult[] = files.map(f => {
+    const depthPenalty = Math.min(40, f.nestingDepth * 8);
+    const outdatedPenalty = Math.min(20, f.outdatedCount * 5);
+    const numScore = Math.max(20, 95 - depthPenalty - outdatedPenalty);
 
-  const fileMetrics: FileMetric[] = files.map(file => {
-    const priorityScore = file.loc * (file.nestingDepth * 3.0) + (file.outdatedCount * 2.0);
-    totalPriorityScore += priorityScore;
-    
     let grade: 'A' | 'B' | 'C' | 'D' | 'F' = 'A';
-    if (priorityScore < 50) grade = 'A';
-    else if (priorityScore < 150) grade = 'B';
-    else if (priorityScore < 400) grade = 'C';
-    else if (priorityScore < 800) grade = 'D';
+    if (numScore >= 85) grade = 'A';
+    else if (numScore >= 70) grade = 'B';
+    else if (numScore >= 55) grade = 'C';
+    else if (numScore >= 40) grade = 'D';
     else grade = 'F';
 
-    let reviewStatus: 'passed' | 'flagged' | 'needs_refactor' = 'passed';
-    if (grade === 'F' || grade === 'D') {
-      reviewStatus = 'flagged';
-    } else if (grade === 'C') {
-      reviewStatus = 'needs_refactor';
-    }
-
-    let recommendedAction = 'No action needed';
-    if (grade === 'F') {
-      recommendedAction = 'Refactor immediately — critical debt';
-    } else if (grade === 'D') {
-      recommendedAction = 'Schedule refactor within sprint';
-    } else if (grade === 'C') {
-      recommendedAction = 'Reduce nesting depth and callbacks';
-    } else if (grade === 'B') {
-      recommendedAction = 'Minor cleanup — low priority';
-    }
-
     return {
-      id: '', // populated at DB level
-      runId: '', // populated at DB level
-      filePath: file.path,
-      linesOfCode: file.loc,
-      maxNestingDepth: file.nestingDepth,
+      filePath: f.path,
+      linesOfCode: f.loc,
+      maxNestingDepth: f.nestingDepth,
       score: grade,
-      outdatedPatternsCount: file.outdatedCount,
-      priorityScore,
-      reviewStatus,
-      recommendedAction
+      numericalScore: numScore,
+      outdatedPatternsCount: f.outdatedCount,
+      priorityScore: Math.round((100 - numScore) * 10 + f.loc * 0.5),
+      reviewStatus: grade === 'F' || grade === 'D' ? 'flagged' : grade === 'C' ? 'needs_refactor' : 'passed',
+      recommendedAction: grade === 'F' ? 'Immediate refactor required' : 'Maintain module',
+      chunkEvaluations: []
     };
   });
 
-  fileMetrics.sort((a, b) => b.priorityScore - a.priorityScore);
-
-  const totalLoc = files.reduce((sum, f) => sum + f.loc, 0);
-  const avgComplexity = files.length > 0 
-    ? files.reduce((sum, f) => sum + f.nestingDepth, 0) / files.length
-    : 0;
-
-  let overallGrade: 'A' | 'B' | 'C' | 'D' | 'F' = 'A';
-  if (avgComplexity < 2) overallGrade = 'A';
-  else if (avgComplexity < 4) overallGrade = 'B';
-  else if (avgComplexity < 6) overallGrade = 'C';
-  else if (avgComplexity < 9) overallGrade = 'D';
-  else overallGrade = 'F';
-
-  const estimatedDebtHours = Math.round(totalPriorityScore / 500);
-
-  // Derived Category Breakdowns (percentages 0-100)
-  const clampedDuplication = Math.min(100, duplicationRate);
-  const maintainability = Math.min(100, avgComplexity * 11);
-  const filesWithOutdated = files.filter(f => f.outdatedCount > 2).length;
-  const security = files.length > 0 ? (filesWithOutdated / files.length) * 100 : 0;
-  const coverage = 0; // fixed placeholder as specified
-
-  const debtCategories: DebtCategories = {
-    security: parseFloat(security.toFixed(2)),
-    maintainability: parseFloat(maintainability.toFixed(2)),
-    duplication: parseFloat(clampedDuplication.toFixed(2)),
-    coverage
-  };
-
-  return {
-    overallGrade,
-    totalLoc,
-    avgComplexity: parseFloat(avgComplexity.toFixed(2)),
-    duplicationRate: parseFloat(duplicationRate.toFixed(2)),
-    estimatedDebtHours,
-    debtCategories,
-    files: fileMetrics
-  };
+  return reduceFileResultsToRepositoryScore(dummyResults, duplicationRate);
 }
