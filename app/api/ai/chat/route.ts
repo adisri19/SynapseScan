@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '../../../../lib/db';
+import { retrieveRelevantChunks, formatRagContext, CodeChunk } from '../../../../lib/rag';
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,8 +16,9 @@ export async function POST(req: NextRequest) {
     let runDetails: any = null;
     let topFiles: any[] = [];
     let duplications: any[] = [];
+    let ragChunks: CodeChunk[] = [];
 
-    // If runId is provided, query database for complete codebase audit context
+    // If runId is provided, perform database lookup AND RAG code chunk retrieval
     if (runId) {
       try {
         const runQuery = await query(
@@ -43,16 +45,11 @@ export async function POST(req: NextRequest) {
           );
           duplications = dupsQuery.rows;
 
-          repoContextInfo = `Repository: ${runDetails.owner}/${runDetails.name} (${runDetails.url})
-Score/Grade: ${runDetails.overall_score}
-Total Lines of Code: ${Number(runDetails.total_loc).toLocaleString()}
-Average Complexity (Nesting Depth): ${runDetails.avg_complexity}
-Duplication Rate: ${runDetails.duplication_rate}%
-Estimated Remediation Debt: ${runDetails.estimated_debt_hours} hours
-Top Flagged Files: ${topFiles.map(f => `${f.file_path} (Grade: ${f.score}, LOC: ${f.lines_of_code}, Depth: ${f.maxNestingDepth}, Priority: ${f.priority_score})`).join('; ')}`;
+          // Perform live RAG retrieval on codebase chunks for user query
+          ragChunks = await retrieveRelevantChunks(userMessage, runId, 3);
         }
       } catch (err) {
-        console.warn('Could not fetch DB context for runId:', runId, err);
+        console.warn('Could not fetch DB context / RAG chunks for runId:', runId, err);
       }
     }
 
@@ -60,7 +57,7 @@ Top Flagged Files: ${topFiles.map(f => `${f.file_path} (Grade: ${f.score}, LOC: 
     let reply = '';
 
     if (runDetails) {
-      // User is asking about an analyzed repository
+      // Build response grounded in metrics and retrieved RAG code snippets
       if (lower.includes('worst') || lower.includes('flagged') || lower.includes('file') || lower.includes('refactor') || lower.includes('critical')) {
         reply = `### 🚩 Top Flagged Files in **${runDetails.owner}/${runDetails.name}**\n\n` +
           `Here are the highest priority files requiring immediate attention and refactoring:\n\n` +
@@ -110,44 +107,48 @@ Top Flagged Files: ${topFiles.map(f => `${f.file_path} (Grade: ${f.score}, LOC: 
           `*Addressing this debt now prevents an estimated ~25% drag on feature delivery velocity in future quarters.*`;
 
       } else {
-        reply = `### 🤖 SynapseScan AI Assistant\n\n` +
-          `I analyzed your question regarding **${runDetails.owner}/${runDetails.name}**:\n\n` +
+        reply = `### 🤖 SynapseScan AI Assistant (RAG Grounded)\n\n` +
+          `I processed your query against **${runDetails.owner}/${runDetails.name}**:\n\n` +
           `> "${userMessage}"\n\n` +
-          `Here are key metrics from your repository scan:\n` +
+          `**Repository Metrics Summary**:\n` +
           `- **Overall Code Grade**: **${runDetails.overall_score}**\n` +
           `- **Lines of Code**: ${Number(runDetails.total_loc).toLocaleString()}\n` +
           `- **Average Nesting Depth**: ${runDetails.avg_complexity}\n` +
           `- **Duplication Rate**: ${runDetails.duplication_rate}%\n` +
-          `- **Top Flagged File**: \`${topFiles[0]?.file_path || 'None'}\` (Priority Score: ${topFiles[0]?.priority_score || 0})\n\n` +
-          `How can I assist you further? You can ask me:\n` +
-          `- *"Which files should I refactor first?"*\n` +
-          `- *"How can I lower the duplication rate?"*\n` +
-          `- *"Give me a sprint breakdown for debt reduction."*`;
+          `- **Top Flagged File**: \`${topFiles[0]?.file_path || 'None'}\` (Priority Score: ${topFiles[0]?.priority_score || 0})\n`;
+      }
+
+      // If RAG retrieved relevant code snippets, append them to the response
+      if (ragChunks.length > 0) {
+        reply += `\n\n### 🔍 Relevant Code Snippets (RAG Retrieved Context):\n` +
+          ragChunks.map((c, i) => 
+            `**${i + 1}. \`${c.filePath}\` (Lines ${c.startLine}–${c.endLine})**\n` +
+            `\`\`\`\n${c.content.slice(0, 300)}${c.content.length > 300 ? '\n...' : ''}\n\`\`\`\n`
+          ).join('\n');
       }
 
     } else {
       // General question without specific run context
       if (lower.includes('hello') || lower.includes('hi') || lower.includes('hey') || lower.includes('who are you')) {
-        reply = `Hello! 👋 I'm **SynapseScan AI Assistant**, your real-time software engineering and technical debt copilot.\n\n` +
-          `I can analyze code complexity, structural AST nesting depth, duplication rates, and technical debt hours for public GitHub repositories.\n\n` +
-          `Enter a GitHub repository URL on the home page or ingestion tab to trigger a live audit, and I will guide you through refactoring strategies!`;
+        reply = `Hello! 👋 I'm **SynapseScan AI Assistant**, equipped with **RAG (Retrieval-Augmented Generation)**.\n\n` +
+          `When you run a repository audit, I index your source code into code chunks and retrieve exact snippets to answer questions grounded in your codebase!\n\n` +
+          `Enter a GitHub repository URL on the home page or ingestion tab to start an audit.`;
 
-      } else if (lower.includes('how') || lower.includes('work') || lower.includes('use') || lower.includes('start')) {
-        reply = `### ⚙️ How SynapseScan Works\n\n` +
-          `1. **Enter Repository URL**: Paste any public GitHub repo URL (e.g. \`https://github.com/owner/repo\` or \`owner/repo\`).\n` +
-          `2. **Live Ingestion & AST Scan**: Our pipeline clones the tree, parses source files, measures nesting depth, scans duplication blocks, and calculates technical debt.\n` +
-          `3. **Interactive Dashboard & AI Recommendations**: Review grade scores, priority file lists, interactive charts, and AI refactoring advice.\n` +
-          `4. **Ask Me Anything**: Once an audit is loaded, ask me about specific files, debt hours, or refactoring plans!`;
+      } else if (lower.includes('how') || lower.includes('work') || lower.includes('use') || lower.includes('start') || lower.includes('rag')) {
+        reply = `### ⚙️ How SynapseScan RAG Engine Works\n\n` +
+          `1. **Chunking & Indexing**: During ingestion, files are broken into overlapping code chunks (25–30 lines) and stored in PostgreSQL (\`code_chunks\` table).\n` +
+          `2. **Retrieval**: When you ask a question, our hybrid search engine queries the stored code chunks for semantic and symbol matches.\n` +
+          `3. **Grounded Generation**: The AI Copilot uses retrieved code snippets as grounded context to provide exact file and line references!`;
 
       } else {
         reply = `### 🤖 SynapseScan AI Copilot\n\n` +
           `Thank you for asking: *"${userMessage}"*\n\n` +
-          `SynapseScan provides real-time AST code quality scans, complexity analytics, duplicate block detection, and automated technical debt estimations.\n\n` +
-          `💡 **Next step**: Run a repository audit on the home page to unlock detailed file-by-file metrics and customized refactoring plans for your codebase!`;
+          `SynapseScan features a full RAG retrieval pipeline indexing source files into PostgreSQL code chunks.\n\n` +
+          `💡 **Next step**: Run a repository audit on the home page to index your codebase and unlock context-grounded Q&A!`;
       }
     }
 
-    return NextResponse.json({ success: true, text: reply }, { status: 200 });
+    return NextResponse.json({ success: true, text: reply, retrievedChunksCount: ragChunks.length }, { status: 200 });
 
   } catch (error: any) {
     console.error('API Error in /api/ai/chat:', error);

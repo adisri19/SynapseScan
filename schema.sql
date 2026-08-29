@@ -85,6 +85,21 @@ CREATE TABLE IF NOT EXISTS webhook_configs (
   created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- RAG Code Chunks table for retrieval-augmented generation
+CREATE TABLE IF NOT EXISTS code_chunks (
+  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  run_id       UUID NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+  file_path    VARCHAR NOT NULL,
+  chunk_index  INTEGER NOT NULL,
+  start_line   INTEGER NOT NULL DEFAULT 1,
+  end_line     INTEGER NOT NULL DEFAULT 1,
+  content      TEXT NOT NULL,
+  created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_chunks_run_id ON code_chunks(run_id);
+CREATE INDEX IF NOT EXISTS idx_code_chunks_file_path ON code_chunks(file_path);
+
 -- Migration safety for existing legacy databases
 ALTER TABLE repositories 
   ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE DEFAULT 'd290f1ee-6c54-4b01-90e6-d701748f0851';

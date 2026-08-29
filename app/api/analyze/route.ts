@@ -3,6 +3,7 @@ import { parseGitHubUrl, fetchRepositoryTree, downloadFileContents } from '../..
 import { calculateNestingDepth, detectDuplications, scanOutdatedPatterns, scoreCodebase } from '../../../lib/analyzer';
 import { query, pool } from '../../../lib/db';
 import { DashboardData } from '../../../lib/types';
+import { indexRepositoryChunks } from '../../../lib/rag';
 
 export const maxDuration = 90;
 
@@ -288,6 +289,9 @@ export async function POST(req: NextRequest) {
           [runId, dup.blockHash, dup.lineCount, JSON.stringify(dup.fileOccurrences)]
         );
       }
+
+      // Index Codebase Chunks for RAG Retrieval
+      await indexRepositoryChunks(dbClient, runId, downloadedFiles);
 
       // Add Ingestion Session Row with status done
       await dbClient.query(
