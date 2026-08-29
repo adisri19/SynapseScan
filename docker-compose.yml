@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: Tech-Debt@8564
       POSTGRES_DB: synapsescan
     ports:
-      - "5432:5432"
+      - "5435:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       # Automatically initializes the schema on first run
