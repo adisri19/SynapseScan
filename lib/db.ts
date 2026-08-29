@@ -54,7 +54,7 @@ export async function runAutoMigrations() {
         symbol_name  VARCHAR(100),
         symbol_type  VARCHAR(50),
         content      TEXT NOT NULL,
-        embedding    vector(1536)
+        embedding    vector(64)
       );
     `);
 
