@@ -8,6 +8,7 @@ export interface ChunkLLMEvaluation {
   maintainabilityScore: number; // 1 - 100
   complexityScore: number;       // 1 - 100
   securityScore: number;         // 1 - 100
+  maxNestingDepth: number;
   reasoning: string;
   identifiedIssues: string[];
 }
@@ -39,7 +40,7 @@ export interface ScorecardResult {
 /**
  * MAP PHASE SYSTEM PROMPT
  * Structured system prompt instructing the LLM to score maintainability, complexity,
- * and security on a 1-100 scale using retrieved RAG dependency context.
+ * security, and maxNestingDepth on a 1-100 and absolute scale using retrieved RAG dependency context.
  */
 export const CHUNK_EVALUATION_SYSTEM_PROMPT = `
 You are an expert static analysis engine and code auditor.
@@ -50,12 +51,17 @@ CRITICAL INSTRUCTIONS:
    - maintainabilityScore (1 = unmaintainable, 100 = perfectly structured & clean)
    - complexityScore (1 = extremely high cognitive/cyclomatic complexity, 100 = clean & linear)
    - securityScore (1 = severe vulnerabilities present, 100 = highly secure & sanitized)
-2. Consider context from dependent/related chunks when analyzing symbols and imports.
-3. Output strictly valid JSON matching this schema:
+2. Evaluate the "maxNestingDepth" of the code block. This represents the maximum level of nested statement blocks (control statements like if, for, while, try-catch, nested functions, or indentation-based nested blocks in Python).
+   - For linear code, maxNestingDepth is 0 or 1.
+   - For nested blocks, increment by 1 for each nesting level.
+   - Evaluate correctly regardless of syntax (brace-based or indentation-based like Python).
+3. Consider context from dependent/related chunks when analyzing symbols and imports.
+4. Output strictly valid JSON matching this schema:
 {
   "maintainabilityScore": number,
   "complexityScore": number,
   "securityScore": number,
+  "maxNestingDepth": number,
   "reasoning": "Concise architectural explanation (2-3 sentences)",
   "identifiedIssues": ["Issue 1", "Issue 2"]
 }
@@ -72,9 +78,9 @@ export async function evaluateChunkWithRAG(
 ): Promise<ChunkLLMEvaluation> {
   if (skipLLM) {
     const loc = chunk.content.split('\n').length;
-    const nesting = (chunk.content.match(/\{/g) || []).length;
+    const maxNesting = estimateIndentationNestingDepth(chunk.content);
     const maintainability = Math.max(30, 95 - loc);
-    const complexity = Math.max(20, 90 - nesting * 4);
+    const complexity = Math.max(20, 90 - maxNesting * 4);
     const security = chunk.content.includes('eval(') || chunk.content.includes('innerHTML') ? 40 : 88;
 
     return {
@@ -83,8 +89,9 @@ export async function evaluateChunkWithRAG(
       maintainabilityScore: maintainability,
       complexityScore: complexity,
       securityScore: security,
-      reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${nesting}.`,
-      identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : []
+      maxNestingDepth: maxNesting,
+      reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${maxNesting}.`,
+      identifiedIssues: maxNesting > 8 ? ['High nesting depth detected'] : []
     };
   }
 
@@ -147,6 +154,7 @@ ${contextSnippet}
             maintainabilityScore: Math.min(100, Math.max(1, Number(parsed.maintainabilityScore) || 75)),
             complexityScore: Math.min(100, Math.max(1, Number(parsed.complexityScore) || 75)),
             securityScore: Math.min(100, Math.max(1, Number(parsed.securityScore) || 85)),
+            maxNestingDepth: Number(parsed.maxNestingDepth) || 0,
             reasoning: parsed.reasoning || 'Evaluated via Map-Reduce AI engine.',
             identifiedIssues: Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : []
           };
@@ -159,9 +167,9 @@ ${contextSnippet}
 
   // Fallback heuristic scoring if Groq API key is omitted or fails
   const loc = chunk.content.split('\n').length;
-  const nesting = (chunk.content.match(/\{/g) || []).length;
+  const maxNesting = estimateIndentationNestingDepth(chunk.content);
   const maintainability = Math.max(30, 95 - loc);
-  const complexity = Math.max(20, 90 - nesting * 4);
+  const complexity = Math.max(20, 90 - maxNesting * 4);
   const security = chunk.content.includes('eval(') || chunk.content.includes('innerHTML') ? 40 : 88;
 
   return {
@@ -170,8 +178,9 @@ ${contextSnippet}
     maintainabilityScore: maintainability,
     complexityScore: complexity,
     securityScore: security,
-    reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${nesting}.`,
-    identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : []
+    maxNestingDepth: maxNesting,
+    reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${maxNesting}.`,
+    identifiedIssues: maxNesting > 8 ? ['High nesting depth detected'] : []
   };
 }
 
@@ -184,13 +193,15 @@ export function reduceChunkEvaluationsToFileGrade(
   fileContent: string
 ): FileAnalysisResult {
   const loc = fileContent.split('\n').length;
-  const nestingDepth = calculateNestingDepth(fileContent);
+  const maxNestingDepth = chunkEvaluations.length > 0
+    ? Math.max(...chunkEvaluations.map(c => c.maxNestingDepth))
+    : estimateIndentationNestingDepth(fileContent);
 
   if (chunkEvaluations.length === 0) {
     return {
       filePath,
       linesOfCode: loc,
-      maxNestingDepth: nestingDepth,
+      maxNestingDepth,
       score: 'A',
       numericalScore: 90,
       outdatedPatternsCount: 0,
@@ -236,7 +247,7 @@ export function reduceChunkEvaluationsToFileGrade(
   return {
     filePath,
     linesOfCode: loc,
-    maxNestingDepth: nestingDepth,
+    maxNestingDepth,
     score: grade,
     numericalScore: compositeScore,
     outdatedPatternsCount,
@@ -312,29 +323,20 @@ export function reduceFileResultsToRepositoryScore(
 }
 
 /**
- * Legacy AST Nesting Depth Helper preserved for structural fallback calculations
+ * Indentation-based Nesting Depth Estimator.
+ * Safely computes maximum nesting depth for any language (including Python!) by examining leading whitespace.
  */
-export function calculateNestingDepth(code: string): number {
-  const cleanCode = code
-    .replace(/\/\/[^\n]*/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '');
-
-  let maxDepth = 0;
-  let currentDepth = 0;
-
-  for (let i = 0; i < cleanCode.length; i++) {
-    const char = cleanCode[i];
-    if (char === '{') {
-      currentDepth++;
-      if (currentDepth > maxDepth) {
-        maxDepth = currentDepth;
-      }
-    } else if (char === '}') {
-      currentDepth--;
-    }
-  }
-
-  return maxDepth;
+export function estimateIndentationNestingDepth(code: string): number {
+  if (!code || !code.trim()) return 0;
+  const lines = code.split('\n');
+  let maxNesting = 0;
+  lines.forEach(line => {
+    const spaces = line.match(/^ */)?.[0].length || 0;
+    const tabs = line.match(/^\t*/)?.[0].length || 0;
+    const depth = Math.floor(spaces / 2) + tabs; // assuming 2 spaces or 1 tab per nesting level
+    if (depth > maxNesting) maxNesting = depth;
+  });
+  return maxNesting;
 }
 
 export function detectDuplications(files: Array<{ path: string; content: string }>): DuplicationBlock[] {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { parseGitLabUrl, fetchGitLabRepositoryTree, downloadGitLabFileContents } from '../../../lib/gitlab';
-import { calculateNestingDepth, detectDuplications, scanOutdatedPatterns, scoreCodebase } from '../../../lib/analyzer';
+import { estimateIndentationNestingDepth, detectDuplications, scanOutdatedPatterns, scoreCodebase } from '../../../lib/analyzer';
 import { query, pool } from '../../../lib/db';
 import { DashboardData } from '../../../lib/types';
 
@@ -202,7 +202,7 @@ export async function POST(req: NextRequest) {
 
     const filesStats = downloadedFiles.map(file => {
       const loc = file.content.split('\n').length;
-      const nestingDepth = calculateNestingDepth(file.content);
+      const nestingDepth = estimateIndentationNestingDepth(file.content);
       const outdatedCount = scanOutdatedPatterns(file.content);
 
       return {

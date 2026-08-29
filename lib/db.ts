@@ -87,9 +87,13 @@ export async function runAutoMigrations() {
   }
 }
 
+import { preheatAstGrammars } from './chunker';
+
 // Trigger background migration on module import asynchronously
 if (typeof window === 'undefined') {
-  runAutoMigrations().catch(e => console.error('[CodePulse Engine] Auto-migration startup panic:', e));
+  runAutoMigrations()
+    .then(() => preheatAstGrammars())
+    .catch(e => console.error('[CodePulse Engine] Auto-migration startup panic:', e));
 }
 
 export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
