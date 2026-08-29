@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAppStore } from '../lib/store';
 import { BRAND } from '../lib/constants';
 import { GitHubUrlForm } from '../components/ingestion/github-url-form';
+import { ProgressStepper } from '../components/ingestion/progress-stepper';
 
 export default function Home() {
   const router = useRouter();
@@ -85,6 +86,9 @@ export default function Home() {
             isLoading={isLoading}
             error={error}
           />
+
+          {/* Animated loading percentage stepper overlay/container */}
+          <ProgressStepper isAnalyzing={isLoading} />
         </div>
 
         {/* Footer powered wordmark */}

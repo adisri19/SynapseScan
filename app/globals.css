@@ -50,6 +50,21 @@ body {
   animation: status-pulse 2s ease-in-out infinite;
 }
 
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, #10B981 0%, #34D399 50%, #10B981 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite linear;
+}
+
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
   height: 6px;
