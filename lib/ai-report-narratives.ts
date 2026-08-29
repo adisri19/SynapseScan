@@ -1,4 +1,4 @@
-import { DashboardData } from './types';
+import { DashboardData, FileMetric } from './types';
 
 export interface AuditNarratives {
   executiveSummary: string;
@@ -7,6 +7,25 @@ export interface AuditNarratives {
   fileExplanations: Record<string, string>;
   refactoredCode: Record<string, string>;
   sprintPlan: string;
+}
+
+function generateFallbackInsight(file: FileMetric): string {
+  const moduleName = file.filePath.split('/').pop()?.replace('.ts','').replace('.tsx','').replace('.js','') ?? 'module';
+  const issues: string[] = [];
+
+  if (file.maxNestingDepth >= 6) issues.push(`critical nesting depth of ${file.maxNestingDepth}`);
+  else if (file.maxNestingDepth >= 4) issues.push(`elevated nesting depth of ${file.maxNestingDepth}`);
+
+  if (file.outdatedPatternsCount > 3) issues.push(`${file.outdatedPatternsCount} legacy patterns`);
+  else if (file.outdatedPatternsCount > 0) issues.push(`${file.outdatedPatternsCount} outdated pattern${file.outdatedPatternsCount > 1 ? 's' : ''}`);
+
+  if (file.linesOfCode > 250) issues.push(`large file size (${file.linesOfCode} LOC)`);
+
+  const issueStr = issues.length > 0
+    ? issues.join(' and ')
+    : `a high priority score of ${Math.round(file.priorityScore)}`;
+
+  return `${moduleName} has ${issueStr}, contributing to a Grade ${file.score} debt rating. ${file.recommendedAction}.`;
 }
 
 export async function fetchAllAiNarratives(
@@ -48,15 +67,24 @@ export async function fetchAllAiNarratives(
     callApi('/api/ai/sprint-plan', { runId })
   ]);
 
-  // Fetch file metrics explanations for top 10 files
+  // Fetch file metrics explanations for top 20 files (for scorecards)
   const fileExplanations: Record<string, string> = {};
-  const top10Files = data.files.slice(0, 10);
-  const explainPromises = top10Files.map(async (file) => {
+  const top20Files = data.files.slice(0, 20);
+  const explainPromises = top20Files.map(async (file) => {
     try {
-      const text = await callApi('/api/ai/explain', { filePath: file.filePath, runId });
+      const text = await callApi('/api/ai/explain', { 
+        filePath: file.filePath, 
+        runId,
+        score: file.score,
+        linesOfCode: file.linesOfCode,
+        maxNestingDepth: file.maxNestingDepth,
+        outdatedPatternsCount: file.outdatedPatternsCount,
+        priorityScore: file.priorityScore,
+        recommendedAction: file.recommendedAction
+      });
       fileExplanations[file.filePath] = text;
     } catch {
-      fileExplanations[file.filePath] = 'Remediation advised to isolate code complexities.';
+      fileExplanations[file.filePath] = generateFallbackInsight(file);
     }
   });
 

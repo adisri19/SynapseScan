@@ -163,6 +163,55 @@ function wrapText(doc: jsPDF, text: string, x: number, y: number, maxWidth: numb
   return y + (lines.length * lineHeight);
 }
 
+interface SprintTicket {
+  id: number;
+  sprint: string;
+  priority: string;
+  priorityLabel: string;
+  title: string;
+  estimatedHours: number;
+  acceptanceCriteria: string[];
+}
+
+function generateFallbackTickets(files: any[], run: any): SprintTicket[] {
+  const sprintMap = ['Sprint 1', 'Sprint 1', 'Sprint 1', 'Sprint 2', 'Sprint 2', 'Backlog'];
+  const priorityMap = ['P0', 'P0', 'P1', 'P1', 'P2', 'P2'];
+  const priorityLabelMap = ['Critical', 'Critical', 'Major', 'Major', 'Minor', 'Minor'];
+
+  return files.slice(0, 6).map((file, i) => {
+    const filename = file.filePath.split('/').pop() ?? file.filePath;
+    const moduleName = filename.replace('.ts','').replace('.tsx','').replace('.js','');
+
+    let title = '';
+    if (file.maxNestingDepth >= 5) title = `Flatten nested blocks in ${filename}`;
+    else if (file.outdatedPatternsCount > 2) title = `Replace legacy patterns in ${filename}`;
+    else if (file.linesOfCode > 200) title = `Split oversized ${filename} into modules`;
+    else title = `Refactor ${filename} — Grade ${file.score} debt`;
+
+    const criteria: string[] = [];
+    if (file.maxNestingDepth >= 4) {
+      criteria.push(`Max nesting depth in ${filename} reduced from ${file.maxNestingDepth} to <= 3`);
+    }
+    if (file.outdatedPatternsCount > 0) {
+      criteria.push(`All ${file.outdatedPatternsCount} outdated pattern${file.outdatedPatternsCount > 1 ? 's' : ''} in ${filename} replaced`);
+    }
+    if (file.linesOfCode > 200) {
+      criteria.push(`${filename} refactored to under 150 LOC per module`);
+    }
+    criteria.push(`All existing tests pass after ${moduleName} refactor`);
+
+    return {
+      id: i + 1,
+      sprint: sprintMap[i],
+      priority: priorityMap[i],
+      priorityLabel: priorityLabelMap[i],
+      title,
+      estimatedHours: Math.max(2, Math.round(file.priorityScore / 300)),
+      acceptanceCriteria: criteria.slice(0, 3)
+    };
+  });
+}
+
 // ----------------------------------------------------
 // EXPORTED GENERATOR ENGINE
 // ----------------------------------------------------
@@ -749,6 +798,12 @@ export async function generateAuditReport(
   const top20Files = files.slice(0, 20);
   const itemsPerPage = 4;
   
+  const CARD_X_START = ML;          // 20mm
+  const CARD_X_END = PW - MR;      // 190mm
+  const CARD_WIDTH = CARD_X_END - CARD_X_START;  // 170mm
+  const CARD_INNER_WIDTH = CARD_WIDTH - 10;       // 160mm
+  const CARD_INNER_X = CARD_X_START + 5;          // 25mm
+
   for (let pageIdx = 0; pageIdx < 5; pageIdx++) {
     doc.addPage();
     const currentPageNum = 10 + pageIdx;
@@ -767,47 +822,65 @@ export async function generateAuditReport(
       const globalRank = pageIdx * itemsPerPage + idx + 1;
       
       // Card container border outline
-      drawRect(doc, ML, yCard, CW, cardH, [255, 255, 255], 2);
+      drawRect(doc, CARD_X_START, yCard, CARD_WIDTH, cardH, [255, 255, 255], 2);
       doc.setDrawColor(226, 232, 240); // slate-200 border
       doc.setLineWidth(0.5);
-      doc.roundedRect(ML, yCard, CW, cardH, 2, 2, 'D');
+      doc.roundedRect(CARD_X_START, yCard, CARD_WIDTH, cardH, 2, 2, 'D');
 
       // Grade badge
       const activeGradeColor = gradeColor(file.score);
       doc.setFillColor(activeGradeColor[0], activeGradeColor[1], activeGradeColor[2]);
-      doc.circle(ML + 10, yCard + 10, 5, 'F');
+      doc.circle(CARD_X_START + 10, yCard + 10, 5, 'F');
       setFont(doc, 8, 'bold', BRAND.white);
-      doc.text(file.score, ML + 10, yCard + 12.5, { align: 'center' });
+      doc.text(file.score, CARD_X_START + 10, yCard + 12.5, { align: 'center' });
 
-      // File title details
+      // File path title (shortened & constrained)
       setFont(doc, 10, 'bold', BRAND.dark);
-      const shortPath = file.filePath.length > 55 ? '...' + file.filePath.slice(-52) : file.filePath;
-      doc.text(shortPath, ML + 18, yCard + 9);
+      const MAX_PATH_CHARS = 60;
+      const displayPath = file.filePath.length > MAX_PATH_CHARS
+        ? '…' + file.filePath.slice(-(MAX_PATH_CHARS - 1))
+        : file.filePath;
+      doc.text(displayPath, CARD_INNER_X + 18, yCard + 9, { maxWidth: CARD_INNER_WIDTH - 18 });
       
       setFont(doc, 7, 'normal', BRAND.slate600);
-      doc.text(`Priority Score: ${file.priorityScore.toFixed(0)}   |   Codebase Rank: #${globalRank}`, ML + 18, yCard + 14);
+      doc.text(`Priority Score: ${file.priorityScore.toFixed(0)}   |   Codebase Rank: #${globalRank}`, CARD_INNER_X + 18, yCard + 14, { maxWidth: CARD_INNER_WIDTH - 18 });
 
       // Separator line
-      drawLine(doc, ML + 4, yCard + 18, ML + CW - 4, yCard + 18, [226, 232, 240], 0.5);
+      drawLine(doc, CARD_X_START + 4, yCard + 18, CARD_X_START + CARD_WIDTH - 4, yCard + 18, [226, 232, 240], 0.5);
 
-      // Metrics columns
+      // Metrics columns (evenly spaced)
       setFont(doc, 8, 'normal', BRAND.slate600);
-      doc.text(`LOC: ${file.linesOfCode}`, ML + 8, yCard + 24);
-      doc.text(`Brace Nesting Depth: ${file.maxNestingDepth}`, ML + 35, yCard + 24);
-      doc.text(`Outdated Patterns: ${file.outdatedPatternsCount}`, ML + 85, yCard + 24);
-      
-      const statLabel = file.reviewStatus === 'passed' ? 'Passed' : file.reviewStatus === 'needs_refactor' ? 'Needs Refactor' : 'Flagged';
-      doc.text(`Review Status: ${statLabel}`, ML + 125, yCard + 24);
+      const metricColWidth = CARD_INNER_WIDTH / 4;
+      const statLabel = file.reviewStatus === 'passed' ? 'Passed' : file.reviewStatus === 'needs_refactor' ? 'Needs Ref' : 'Flagged';
+      const metrics = [
+        `LOC: ${file.linesOfCode}`,
+        `Depth: ${file.maxNestingDepth}`,
+        `Patterns: ${file.outdatedPatternsCount}`,
+        `Status: ${statLabel}`,
+      ];
+
+      metrics.forEach((metric, i) => {
+        const metricX = CARD_INNER_X + (i * metricColWidth);
+        doc.text(metric, metricX, yCard + 24, { maxWidth: metricColWidth - 2 });
+      });
 
       // Action line
       setFont(doc, 8, 'bold', BRAND.dark);
-      doc.text(`Remediation: ${file.recommendedAction}`, ML + 8, yCard + 31);
+      doc.text(`Remediation: ${file.recommendedAction}`, CARD_INNER_X, yCard + 31, { maxWidth: CARD_INNER_WIDTH });
 
-      // AI File Explanation / Insight snippet
+      // AI File Explanation / Insight snippet (clamped, safe text wrapped)
       const aiFileExplanation = narratives.fileExplanations[file.filePath] || 'Isolate brace nesting indicators to ensure structural maintainability guidelines.';
-      const truncateExplanation = aiFileExplanation.length > 150 ? aiFileExplanation.slice(0, 147) + '...' : aiFileExplanation;
+      const MAX_INSIGHT_CHARS = 180;
+      const safeInsight = aiFileExplanation.length > MAX_INSIGHT_CHARS
+        ? aiFileExplanation.slice(0, MAX_INSIGHT_CHARS).trimEnd() + '…'
+        : aiFileExplanation;
+
       setFont(doc, 7.5, 'italic', BRAND.slate600);
-      doc.text(`AI Insight: "${truncateExplanation}"`, ML + 8, yCard + 37);
+      const insightLines = doc.splitTextToSize(safeInsight, CARD_INNER_WIDTH);
+      const displayLines = insightLines.slice(0, 2);
+      displayLines.forEach((line: string, lIdx: number) => {
+        doc.text(line, CARD_INNER_X, yCard + 37 + (lIdx * 4), { maxWidth: CARD_INNER_WIDTH });
+      });
 
       // Mini vector complexity bars
       const maxLocAcrossAll = Math.max(...files.map(f => f.linesOfCode));
@@ -816,16 +889,18 @@ export async function generateAuditReport(
       const maxDepthAcrossAll = Math.max(...files.map(f => f.maxNestingDepth));
       const depthPercentage = maxDepthAcrossAll > 0 ? file.maxNestingDepth / maxDepthAcrossAll : 0;
 
+      const BAR_MAX_WIDTH = (CARD_INNER_WIDTH / 2) - 35;
+
       // Draw LOC bar
-      drawRect(doc, ML + 8, yCard + 42, 60, 3, [241, 245, 249], 1);
-      drawRect(doc, ML + 8, yCard + 42, 60 * locPercentage, 3, BRAND.indigo, 1);
+      drawRect(doc, CARD_INNER_X, yCard + 45, BAR_MAX_WIDTH, 2.5, [241, 245, 249], 1);
+      drawRect(doc, CARD_INNER_X, yCard + 45, BAR_MAX_WIDTH * locPercentage, 2.5, BRAND.indigo, 1);
       setFont(doc, 7, 'bold', BRAND.slate600);
-      doc.text(`LOC Volume: ${Math.round(locPercentage * 100)}%`, ML + 72, yCard + 44.5);
+      doc.text(`LOC Vol: ${Math.round(locPercentage * 100)}%`, CARD_INNER_X + BAR_MAX_WIDTH + 3, yCard + 47.5);
 
       // Draw Depth bar
-      drawRect(doc, ML + 105, yCard + 42, 45, 3, [241, 245, 249], 1);
-      drawRect(doc, ML + 105, yCard + 42, 45 * depthPercentage, 3, BRAND.red, 1);
-      doc.text(`Nesting Complexity: ${Math.round(depthPercentage * 100)}%`, ML + 153, yCard + 44.5);
+      drawRect(doc, CARD_INNER_X + CARD_INNER_WIDTH / 2, yCard + 45, BAR_MAX_WIDTH, 2.5, [241, 245, 249], 1);
+      drawRect(doc, CARD_INNER_X + CARD_INNER_WIDTH / 2, yCard + 45, BAR_MAX_WIDTH * depthPercentage, 2.5, BRAND.red, 1);
+      doc.text(`Nesting: ${Math.round(depthPercentage * 100)}%`, CARD_INNER_X + CARD_INNER_WIDTH / 2 + BAR_MAX_WIDTH + 3, yCard + 47.5);
 
       yCard += cardH + 5;
     });
@@ -839,49 +914,67 @@ export async function generateAuditReport(
   doc.addPage();
   addSectionHeader(doc, 'Sprint Remediation Plan', 'AI-generated task boards for codebase debt resolution');
 
-  // Hardcoded/Fallback tickets structured beautifully if plan md parser is not applicable
-  const tickets = [
-    { p: 'P0', title: `Refactor structural nesting: ${top20Files[0]?.filePath.split('/').pop()}`, hours: 8, priority: 'Critical', sprint: 'Sprint 1', border: BRAND.red },
-    { p: 'P0', title: `Remediate file callbacks: ${top20Files[1]?.filePath.split('/').pop()}`, hours: 6, priority: 'Critical', sprint: 'Sprint 1', border: BRAND.red },
-    { p: 'P1', title: `Extract duplicated code lines`, hours: 4, priority: 'Major', sprint: 'Sprint 1', border: BRAND.amber },
-    { p: 'P1', title: `Reduce complexity: ${top20Files[2]?.filePath.split('/').pop()}`, hours: 8, priority: 'Major', sprint: 'Sprint 2', border: BRAND.indigo },
-    { p: 'P2', title: `Minor codebase cleanup`, hours: 4, priority: 'Minor', sprint: 'Backlog', border: BRAND.slate600 },
-    { p: 'P2', title: `Enforce AST linting rules`, hours: 3, priority: 'Minor', sprint: 'Backlog', border: BRAND.slate600 }
-  ];
+  // Parse the AI sprint plan response as JSON
+  let sprintTicketsList: SprintTicket[] = [];
+  try {
+    const cleanJson = narratives.sprintPlan
+      .replace(/```json\n?/g, '')
+      .replace(/```\n?/g, '')
+      .trim();
+    sprintTicketsList = JSON.parse(cleanJson);
+  } catch {
+    sprintTicketsList = generateFallbackTickets(files.slice(0, 6), run);
+  }
 
   let yTicket = 45;
   const ticketH = 34;
+  const TICKET_CARD_WIDTH = (CW / 2) - 3;
+  const TICKET_INNER_WIDTH = TICKET_CARD_WIDTH - 10;
 
-  tickets.forEach((ticket, idx) => {
+  sprintTicketsList.slice(0, 6).forEach((ticket, idx) => {
     const colIdx = idx % 2;
     const rowIdx = Math.floor(idx / 2);
 
-    const xTicket = ML + (colIdx * (roiW + 4));
+    const xTicket = ML + (colIdx * (TICKET_CARD_WIDTH + 6));
     const yTick = yTicket + (rowIdx * (ticketH + 4));
 
-    drawRect(doc, xTicket, yTick, roiW, ticketH, [255, 255, 255], 2);
+    drawRect(doc, xTicket, yTick, TICKET_CARD_WIDTH, ticketH, [255, 255, 255], 2);
     doc.setDrawColor(226, 232, 240);
     doc.setLineWidth(0.5);
-    doc.roundedRect(xTicket, yTick, roiW, ticketH, 2, 2, 'D');
+    doc.roundedRect(xTicket, yTick, TICKET_CARD_WIDTH, ticketH, 2, 2, 'D');
 
-    // Colored left border
-    drawRect(doc, xTicket, yTick, 3.5, ticketH, ticket.border, 2);
+    // Colored left border based on priority
+    let ticketColor = BRAND.slate600;
+    if (ticket.priority === 'P0') ticketColor = BRAND.red;
+    else if (ticket.priority === 'P1') ticketColor = BRAND.amber;
+    else if (ticket.priority === 'P2') ticketColor = BRAND.indigo;
+
+    drawRect(doc, xTicket, yTick, 3.5, ticketH, ticketColor, 2);
 
     setFont(doc, 8, 'bold', BRAND.dark);
-    doc.text(`[${ticket.p}] TICKET #${idx + 1}`, xTicket + 7, yTick + 6);
+    doc.text(`[${ticket.priority}] TICKET #${ticket.id}`, xTicket + 7, yTick + 6);
     setFont(doc, 8, 'bold', BRAND.slate600);
-    doc.text(ticket.sprint, xTicket + roiW - 20, yTick + 6);
+    doc.text(ticket.sprint, xTicket + TICKET_CARD_WIDTH - 20, yTick + 6);
 
+    // Title (wrapped & clamped to 2 lines)
     setFont(doc, 8.5, 'bold', BRAND.dark);
-    const shortTitle = ticket.title.length > 32 ? ticket.title.slice(0, 29) + '...' : ticket.title;
-    doc.text(shortTitle, xTicket + 7, yTick + 13);
+    const titleLines = doc.splitTextToSize(ticket.title, TICKET_INNER_WIDTH);
+    const displayTitleLines = titleLines.slice(0, 2);
+    displayTitleLines.forEach((line: string, tIdx: number) => {
+      doc.text(line, xTicket + 7, yTick + 13 + (tIdx * 4), { maxWidth: TICKET_INNER_WIDTH });
+    });
 
-    setFont(doc, 7.5, 'normal', BRAND.slate600);
-    doc.text(`Est. Hours: ${ticket.hours} hrs   |   Priority: ${ticket.priority}`, xTicket + 7, yTick + 19);
+    setFont(doc, 7, 'normal', BRAND.slate600);
+    doc.text(`Est. Hours: ${ticket.estimatedHours} hrs   |   Priority: ${ticket.priorityLabel}`, xTicket + 7, yTick + 21);
 
-    drawLine(doc, xTicket + 7, yTick + 22, xTicket + roiW - 7, yTick + 22, [226, 232, 240], 0.5);
-    doc.text('✓ Verify max nesting depth reduced to <= 3', xTicket + 7, yTick + 26);
-    doc.text('✓ Run standard unit tests verification', xTicket + 7, yTick + 30);
+    drawLine(doc, xTicket + 7, yTick + 23, xTicket + TICKET_CARD_WIDTH - 7, yTick + 23, [226, 232, 240], 0.5);
+    
+    // Acceptance criteria (each wrapped, clamped to 1 line)
+    ticket.acceptanceCriteria.slice(0, 2).forEach((criterion, cIdx) => {
+      const criteriaLines = doc.splitTextToSize(`• ${criterion}`, TICKET_INNER_WIDTH);
+      const displayLine = criteriaLines[0] + (criteriaLines.length > 1 ? '…' : '');
+      doc.text(displayLine, xTicket + 7, yTick + 27 + (cIdx * 4), { maxWidth: TICKET_INNER_WIDTH });
+    });
   });
 
   addPageFooter(doc, 15, totalPages, run.id);

@@ -95,3 +95,13 @@ export interface ReviewFilters {
   startDate: string;
   endDate: string;
 }
+
+export interface SprintTicket {
+  id: number;
+  sprint: string;
+  priority: string;
+  priorityLabel: string;
+  title: string;
+  estimatedHours: number;
+  acceptanceCriteria: string[];
+}
