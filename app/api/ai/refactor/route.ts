@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { reasoningEngine } from '../../../../lib/reasoning-engine';
 
 export async function POST(req: NextRequest) {
   try {
@@ -8,41 +9,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'filePath is required.' }, { status: 400 });
     }
 
-    const refactoredCode = `// AI Refactored version of: ${filePath}
-// Goal: Reduce nested scopes, remove var statements, and isolate utility handlers.
+    const query = `Provide refactored code for ${filePath} that eliminates nesting, removes var keywords, and isolates functions cleanly.`;
 
-export function handleAction(config) {
-  if (!config) {
-    throw new Error('Config missing');
-  }
+    const reasoningResult = await reasoningEngine.executeReasoning({
+      runId,
+      query,
+      taskType: 'refactor',
+      targetFilePath: filePath,
+      retrievalLimit: 3
+    });
 
-  const { data, options } = config;
-  return processData(data, options);
-}
-
-function processData(data, options) {
-  if (!data || data.length === 0) {
-    return [];
-  }
-
-  return data.map(item => sanitizeItem(item, options));
-}
-
-function sanitizeItem(item, options) {
-  const cleanId = item.id || 'default_id';
-  const val = item.value || 0;
-  
-  return {
-    ...item,
-    id: cleanId,
-    score: val * (options?.multiplier || 1)
-  };
-}`;
-
-    return NextResponse.json({ success: true, text: refactoredCode }, { status: 200 });
+    return NextResponse.json({ 
+      success: true, 
+      text: reasoningResult.text,
+      modelUsed: reasoningResult.modelUsed,
+      retrievedChunksCount: reasoningResult.retrievedChunksCount
+    }, { status: 200 });
 
   } catch (error: any) {
     console.error('API Error in /api/ai/refactor:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error: 'Internal server error processing refactor request.' }, { status: 500 });
   }
 }

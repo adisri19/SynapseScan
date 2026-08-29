@@ -1,5 +1,7 @@
 'use client';
 
+export const dynamic = 'force-dynamic';
+
 import React, { useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useAppStore } from '../../lib/store';
@@ -11,7 +13,6 @@ import { DebtTrendsChart } from '../../components/dashboard/debt-trends-chart';
 import { ErrorBoundary } from '../../components/error-boundary';
 import { DashboardData } from '../../lib/types';
 import { generateAuditReport } from '../../lib/generate-report';
-import { fetchAllAiNarratives } from '../../lib/ai-report-narratives';
 import { ExportModal } from '../../components/ui/export-modal';
 
 function DashboardContent() {
@@ -31,7 +32,20 @@ function DashboardContent() {
     setIsExporting(true);
     try {
       setExportStep('Fetching AI narratives...');
-      const narratives = await fetchAllAiNarratives(runId, dashboardData);
+      const resp = await fetch('/api/ai/forecast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId })
+      });
+      const narrativesData = await resp.json();
+      const narratives = narrativesData?.narratives || {
+        executiveSummary: 'Grounded static analysis indicates technical debt items.',
+        roiAnalysis: 'Immediate remediation avoids compounding delay.',
+        riskForecast: 'Technical debt hours projected to grow without intervention.',
+        fileExplanations: {},
+        refactoredCode: {},
+        sprintPlan: '[]'
+      };
 
       setExportStep('Building cover page...');
       await new Promise(r => setTimeout(r, 400));

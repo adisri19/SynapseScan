@@ -93,12 +93,16 @@ CREATE TABLE IF NOT EXISTS code_chunks (
   chunk_index  INTEGER NOT NULL,
   start_line   INTEGER NOT NULL DEFAULT 1,
   end_line     INTEGER NOT NULL DEFAULT 1,
+  symbol_name  VARCHAR(100),
+  symbol_type  VARCHAR(30) DEFAULT 'block',
   content      TEXT NOT NULL,
+  embedding    JSONB,
   created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_code_chunks_run_id ON code_chunks(run_id);
 CREATE INDEX IF NOT EXISTS idx_code_chunks_file_path ON code_chunks(file_path);
+CREATE INDEX IF NOT EXISTS idx_code_chunks_symbol_name ON code_chunks(symbol_name);
 
 -- Migration safety for existing legacy databases
 ALTER TABLE repositories 
@@ -113,4 +117,9 @@ ALTER TABLE file_metrics
   ADD COLUMN IF NOT EXISTS priority_score NUMERIC(10,2) DEFAULT 0,
   ADD COLUMN IF NOT EXISTS review_status VARCHAR(30) DEFAULT 'passed',
   ADD COLUMN IF NOT EXISTS recommended_action VARCHAR DEFAULT 'No action needed';
+
+ALTER TABLE code_chunks
+  ADD COLUMN IF NOT EXISTS symbol_name VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS symbol_type VARCHAR(30) DEFAULT 'block',
+  ADD COLUMN IF NOT EXISTS embedding JSONB;
 
