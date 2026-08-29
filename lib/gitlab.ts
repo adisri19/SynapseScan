@@ -5,8 +5,12 @@
  */
 export function parseGitLabUrl(url: string): { owner: string; repo: string; branch: string } {
   try {
-    const parsed = new URL(url);
-    if (parsed.hostname !== 'gitlab.com') {
+    let cleanUrl = url.trim();
+    if (cleanUrl.startsWith('http://')) {
+      cleanUrl = 'https://' + cleanUrl.slice(7);
+    }
+    const parsed = new URL(cleanUrl);
+    if (parsed.hostname !== 'gitlab.com' && parsed.hostname !== 'www.gitlab.com') {
       throw new Error('Not a GitLab URL');
     }
 
@@ -17,7 +21,10 @@ export function parseGitLabUrl(url: string): { owner: string; repo: string; bran
 
     const owner = parts[0];
     // GitLab supports nested subgroups, so let's join all preceding parts before the actual project repository
-    const repo = parts[parts.indexOf('-') !== -1 ? parts.indexOf('-') - 1 : parts.length - 1] || parts[1];
+    let repo = parts[parts.indexOf('-') !== -1 ? parts.indexOf('-') - 1 : parts.length - 1] || parts[1];
+    if (repo.endsWith('.git')) {
+      repo = repo.slice(0, -4);
+    }
     let branch = 'main';
 
     const treeIdx = parts.indexOf('tree');

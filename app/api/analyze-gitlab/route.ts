@@ -19,7 +19,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'repoUrl is required.' }, { status: 400 });
     }
 
-    if (!repoUrl.startsWith('https://gitlab.com/')) {
+    let normalizedUrl = repoUrl.trim();
+    if (normalizedUrl.startsWith('http://')) {
+      normalizedUrl = 'https://' + normalizedUrl.slice(7);
+    }
+    if (normalizedUrl.startsWith('https://www.gitlab.com/')) {
+      normalizedUrl = 'https://gitlab.com/' + normalizedUrl.slice(23);
+    }
+
+    if (!normalizedUrl.startsWith('https://gitlab.com/')) {
       return NextResponse.json({ error: 'Repository URL must start with https://gitlab.com/' }, { status: 400 });
     }
 
@@ -28,7 +36,7 @@ export async function POST(req: NextRequest) {
     let branch = '';
 
     try {
-      const parsed = parseGitLabUrl(repoUrl);
+      const parsed = parseGitLabUrl(normalizedUrl);
       owner = parsed.owner;
       repo = parsed.repo;
       branch = parsed.branch;

@@ -1,8 +1,12 @@
 export function parseGitHubUrl(url: string): { owner: string; repo: string; branch: string } {
   // Accepted formats: https://github.com/owner/repo, https://github.com/owner/repo/tree/branch, etc.
   try {
-    const parsed = new URL(url);
-    if (parsed.hostname !== 'github.com') {
+    let cleanUrl = url.trim();
+    if (cleanUrl.startsWith('http://')) {
+      cleanUrl = 'https://' + cleanUrl.slice(7);
+    }
+    const parsed = new URL(cleanUrl);
+    if (parsed.hostname !== 'github.com' && parsed.hostname !== 'www.github.com') {
       throw new Error('Not a GitHub URL');
     }
 
@@ -12,7 +16,10 @@ export function parseGitHubUrl(url: string): { owner: string; repo: string; bran
     }
 
     const owner = parts[0];
-    const repo = parts[1];
+    let repo = parts[1];
+    if (repo.endsWith('.git')) {
+      repo = repo.slice(0, -4);
+    }
     let branch = 'main';
 
     if (parts[2] === 'tree' && parts[3]) {
