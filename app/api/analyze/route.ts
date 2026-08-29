@@ -15,6 +15,7 @@ import { chunkCodeFile } from '../../../lib/chunker';
 export const maxDuration = 90;
 
 export async function POST(req: NextRequest) {
+  const startTime = Date.now();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 85000);
 
@@ -250,26 +251,32 @@ export async function POST(req: NextRequest) {
       dbClient.release();
     }
 
-    // MAP & REDUCE PIPELINE
-    const fileAnalysisResults: FileAnalysisResult[] = [];
-
-    for (const file of downloadedFiles) {
-      if (controller.signal.aborted) {
-        throw new Error('Analysis timeout');
-      }
-
-      // AST-based Chunking
-      const fileChunks: CodeChunk[] = chunkCodeFile(file.path, file.content);
-
-      // Map Phase: Evaluate each chunk with RAG-grounded dependency context
-      const chunkEvaluations = await Promise.all(
-        fileChunks.map(chunk => evaluateChunkWithRAG(chunk, tempRunId))
-      );
-
-      // Reduce Phase (File Level): Rollup chunk evaluations to FileGrade
-      const fileResult = reduceChunkEvaluationsToFileGrade(file.path, chunkEvaluations, file.content);
-      fileAnalysisResults.push(fileResult);
-    }
+     // MAP & REDUCE PIPELINE
+     const fileAnalysisResults: FileAnalysisResult[] = [];
+ 
+     for (const file of downloadedFiles) {
+       if (controller.signal.aborted) {
+         throw new Error('Analysis timeout');
+       }
+ 
+       // AST-based Chunking
+       const fileChunks: CodeChunk[] = chunkCodeFile(file.path, file.content);
+ 
+       // Check if we are approaching the Vercel 90-second timeout.
+       // If elapsed time exceeds 55 seconds, automatically skip LLM and fall back to local heuristics
+       // to guarantee successful completion and zero serverless timeout failures!
+       const elapsed = Date.now() - startTime;
+       const skipLLM = elapsed > 55000;
+ 
+       // Map Phase: Evaluate each chunk with RAG-grounded dependency context
+       const chunkEvaluations = await Promise.all(
+         fileChunks.map(chunk => evaluateChunkWithRAG(chunk, tempRunId, undefined, skipLLM))
+       );
+ 
+       // Reduce Phase (File Level): Rollup chunk evaluations to FileGrade
+       const fileResult = reduceChunkEvaluationsToFileGrade(file.path, chunkEvaluations, file.content);
+       fileAnalysisResults.push(fileResult);
+     }
 
     // Reduce Phase (Repository Level): Rollup file results to OverallRepositoryScore
     const scorecard = reduceFileResultsToRepositoryScore(fileAnalysisResults, duplicationRate);

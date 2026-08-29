@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node tests/url-parser.test.js && node tests/safe-json-parse.test.js"
+    "test": "node tests/url-parser.test.js && node tests/safe-json-parse.test.js && node tests/analysis-timeout.test.js"
   },
   "dependencies": {
     "@types/pg": "^8.23.1",

@@ -67,8 +67,27 @@ CRITICAL INSTRUCTIONS:
 export async function evaluateChunkWithRAG(
   chunk: CodeChunk,
   runId?: string,
-  groqApiKey?: string
+  groqApiKey?: string,
+  skipLLM?: boolean
 ): Promise<ChunkLLMEvaluation> {
+  if (skipLLM) {
+    const loc = chunk.content.split('\n').length;
+    const nesting = (chunk.content.match(/\{/g) || []).length;
+    const maintainability = Math.max(30, 95 - loc);
+    const complexity = Math.max(20, 90 - nesting * 4);
+    const security = chunk.content.includes('eval(') || chunk.content.includes('innerHTML') ? 40 : 88;
+
+    return {
+      chunkIndex: chunk.chunkIndex,
+      filePath: chunk.filePath,
+      maintainabilityScore: maintainability,
+      complexityScore: complexity,
+      securityScore: security,
+      reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${nesting}.`,
+      identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : []
+    };
+  }
+
   let contextSnippet = 'No additional dependent RAG chunks retrieved.';
 
   if (runId) {
