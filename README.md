@@ -30,6 +30,10 @@ Building an AI-augmented static analysis tool sounds straightforward until you r
 * **The Issue:** A file like `data/cases.json` received a Grade `F` due to priority scores, but the UI displayed *"No critical tech-debt indicators identified. Codebase structure matches quality guidelines"* because the frontend function was only checking LOC thresholds instead of the grade.
 * **The Fix:** Fixed `getAnnotatedIssues` in `review-results-panel.tsx` to handle `F` and `D` grades explicitly. We also added a live **🤖 AI Lead Architect Assessment** card in the Review Console that calls `/api/ai/explain` to display grounded Groq LLM explanations when any file is selected.
 
+### 6. Migrating to Official OpenAI SDK with Automatic Retries
+* **The Issue:** Raw `fetch()` calls to LLM endpoints failed immediately when network blips or rate limits occurred, forcing immediate fallback to local heuristics.
+* **The Fix:** Replaced raw `fetch()` calls in `lib/reasoning-engine.ts` and `lib/analyzer.ts` with the official `openai` SDK pointing natively to Groq (`baseURL: 'https://api.groq.com/openai/v1'`). The SDK handles **automatic exponential backoff retries (`maxRetries: 3`)** and enforces strict JSON object schema responses natively.
+
 ---
 
 ## 🏗 Technical Stack

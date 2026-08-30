@@ -1,3 +1,4 @@
+import OpenAI from 'openai';
 import { buildGroundedContext, formatPromptEvidence } from './context-builder';
 
 export interface ReasoningOptions {
@@ -25,11 +26,10 @@ export function sanitizeApiKey(key?: string): string {
 
 /**
  * Shared Groq Reasoning Engine Singleton.
- * Uses Groq API (or grounded fallback if Groq API key is missing) to produce strictly code-grounded explanations.
+ * Uses official OpenAI SDK targeting Groq API with built-in retries & backoff.
  */
 export class GroqReasoningEngine {
   private readonly defaultModel = 'llama-3.3-70b-versatile';
-  private readonly groqEndpoint = 'https://api.groq.com/openai/v1/chat/completions';
 
   async executeReasoning(options: ReasoningOptions): Promise<ReasoningResult> {
     const {
@@ -52,7 +52,6 @@ export class GroqReasoningEngine {
     const apiKey = sanitizeApiKey(process.env.GROQ_API_KEY);
 
     if (!apiKey) {
-      // Fallback deterministic response when GROQ_API_KEY is not configured
       const fallbackText = this.generateGroundedFallback(taskType, context);
       return {
         success: true,
@@ -64,38 +63,25 @@ export class GroqReasoningEngine {
     }
 
     try {
-      const response = await fetch(this.groqEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: this.defaultModel,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: `${evidenceText}\n\nUSER REQUEST: ${query}` }
-          ],
-          temperature: 0.2,
-          max_tokens: 1200
-        })
+      // Official OpenAI SDK instance configured for Groq with 3 automatic retries
+      const groqClient = new OpenAI({
+        apiKey,
+        baseURL: 'https://api.groq.com/openai/v1',
+        maxRetries: 3,
+        timeout: 25000
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.warn(`[Groq AI Engine Warning] API call returned error status ${response.status}:`, errorText);
-        return {
-          success: true,
-          text: this.generateGroundedFallback(taskType, context),
-          modelUsed: 'groq-fallback',
-          retrievedChunksCount: context.relevantChunks.length,
-          groundedEvidence: evidenceText,
-          error: `Groq API Error ${response.status}: ${errorText}`
-        };
-      }
+      const completion = await groqClient.chat.completions.create({
+        model: this.defaultModel,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `${evidenceText}\n\nUSER REQUEST: ${query}` }
+        ],
+        temperature: 0.2,
+        max_tokens: 1200
+      });
 
-      const data = await response.json();
-      const llmOutput = data?.choices?.[0]?.message?.content || this.generateGroundedFallback(taskType, context);
+      const llmOutput = completion.choices[0]?.message?.content || this.generateGroundedFallback(taskType, context);
 
       return {
         success: true,
@@ -106,14 +92,14 @@ export class GroqReasoningEngine {
       };
 
     } catch (err: any) {
-      console.error('Error invoking Groq API:', err);
+      console.warn('[Groq OpenAI SDK Warning] Groq execution error, falling back to grounded context:', err?.message || err);
       return {
         success: true,
         text: this.generateGroundedFallback(taskType, context),
         modelUsed: 'groq-error-fallback',
         retrievedChunksCount: context.relevantChunks.length,
         groundedEvidence: evidenceText,
-        error: err.message
+        error: err?.message || 'SDK request error'
       };
     }
   }

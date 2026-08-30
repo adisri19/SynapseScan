@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import OpenAI from 'openai';
 import { CodeChunk, DuplicationBlock, FileMetric, DebtCategories } from './types';
 import { retrieveRelevantChunks, formatRagContext } from './rag';
 import { sanitizeApiKey } from './reasoning-engine';
@@ -146,45 +147,39 @@ ${contextSnippet}
 
   if (apiKey) {
     try {
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [
-            { role: 'system', content: CHUNK_EVALUATION_SYSTEM_PROMPT },
-            { role: 'user', content: promptText }
-          ],
-          temperature: 0.1,
-          response_format: { type: 'json_object' }
-        })
+      const groqClient = new OpenAI({
+        apiKey,
+        baseURL: 'https://api.groq.com/openai/v1',
+        maxRetries: 3,
+        timeout: 25000
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        const contentStr = data.choices?.[0]?.message?.content;
-        if (contentStr) {
-          const parsed = JSON.parse(contentStr);
-          return {
-            chunkIndex: chunk.chunkIndex,
-            filePath: chunk.filePath,
-            maintainabilityScore: Math.min(100, Math.max(1, Number(parsed.maintainabilityScore) || 75)),
-            complexityScore: Math.min(100, Math.max(1, Number(parsed.complexityScore) || 75)),
-            securityScore: Math.min(100, Math.max(1, Number(parsed.securityScore) || 85)),
-            maxNestingDepth: Math.max(1, Number(parsed.maxNestingDepth) || 1),
-            reasoning: parsed.reasoning || 'Evaluated via Map-Reduce AI engine.',
-            identifiedIssues: Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : []
-          };
-        }
-      } else {
-        const errText = await response.text();
-        console.warn(`[Groq LLM Map Evaluation Warning] HTTP ${response.status}:`, errText);
+      const completion = await groqClient.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: CHUNK_EVALUATION_SYSTEM_PROMPT },
+          { role: 'user', content: promptText }
+        ],
+        temperature: 0.1,
+        response_format: { type: 'json_object' }
+      });
+
+      const contentStr = completion.choices[0]?.message?.content;
+      if (contentStr) {
+        const parsed = JSON.parse(contentStr);
+        return {
+          chunkIndex: chunk.chunkIndex,
+          filePath: chunk.filePath,
+          maintainabilityScore: Math.min(100, Math.max(1, Number(parsed.maintainabilityScore) || 75)),
+          complexityScore: Math.min(100, Math.max(1, Number(parsed.complexityScore) || 75)),
+          securityScore: Math.min(100, Math.max(1, Number(parsed.securityScore) || 85)),
+          maxNestingDepth: Math.max(1, Number(parsed.maxNestingDepth) || 1),
+          reasoning: parsed.reasoning || 'Evaluated via Map-Reduce AI engine.',
+          identifiedIssues: Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : []
+        };
       }
-    } catch (err) {
-      console.warn('Groq LLM Map Evaluation error, falling back to deterministic AST heuristic:', err);
+    } catch (err: any) {
+      console.warn('[Groq OpenAI SDK Map Evaluation Warning]:', err?.message || err);
     }
   }
 
