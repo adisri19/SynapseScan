@@ -14,7 +14,8 @@ export async function POST(req: NextRequest) {
       runId,
       query: userMessage,
       taskType: 'chat',
-      retrievalLimit: 4
+      retrievalLimit: 4,
+      chatHistory: messages
     });
 
     return NextResponse.json({ 

@@ -8,8 +8,11 @@ export interface ChunkLLMEvaluation {
   maintainabilityScore: number; // 1 - 100
   complexityScore: number;       // 1 - 100
   securityScore: number;         // 1 - 100
+  refactoringPriorityScore: number; // 1 - 100
   reasoning: string;
   identifiedIssues: string[];
+  primaryIssues: string[];
+  suggestedFixSummary: string;
 }
 
 export interface FileAnalysisResult {
@@ -83,8 +86,11 @@ export async function evaluateChunkWithRAG(
       maintainabilityScore: maintainability,
       complexityScore: complexity,
       securityScore: security,
+      refactoringPriorityScore: 50,
       reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${nesting}.`,
-      identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : []
+      identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : [],
+      primaryIssues: [],
+      suggestedFixSummary: 'No suggested fix.'
     };
   }
 
@@ -115,9 +121,51 @@ ${chunk.content}
 ${contextSnippet}
 `;
 
-  const apiKey = groqApiKey || process.env.GROQ_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const apiKey = groqApiKey || process.env.GROQ_API_KEY || geminiKey;
 
-  if (apiKey) {
+  if (geminiKey) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: CHUNK_EVALUATION_SYSTEM_PROMPT }]
+          },
+          contents: [{ role: 'user', parts: [{ text: promptText }] }],
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: 'application/json'
+          }
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const contentStr = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (contentStr) {
+          const parsed = JSON.parse(contentStr);
+          return {
+            chunkIndex: chunk.chunkIndex,
+            filePath: chunk.filePath,
+            maintainabilityScore: Math.min(100, Math.max(1, Number(parsed.maintainabilityScore) || 75)),
+            complexityScore: Math.min(100, Math.max(1, Number(parsed.complexityScore) || 75)),
+            securityScore: Math.min(100, Math.max(1, Number(parsed.securityScore) || 85)),
+            refactoringPriorityScore: Math.min(100, Math.max(1, Number(parsed.refactoringPriorityScore) || 50)),
+            identifiedIssues: Array.isArray(parsed.primaryIssues) ? parsed.primaryIssues : (Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : []),
+            primaryIssues: Array.isArray(parsed.primaryIssues) ? parsed.primaryIssues : [],
+            suggestedFixSummary: parsed.suggestedFixSummary || 'Maintain modular structure.',
+            reasoning: parsed.reasoning || 'Grounded LLM evaluation.'
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('Gemini chunk evaluation failed, trying Groq or local heuristics:', err);
+    }
+  }
+
+  if (apiKey && !geminiKey) {
     try {
       const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
@@ -126,7 +174,7 @@ ${contextSnippet}
           'Authorization': `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
+          model: 'llama3-70b-8192',
           messages: [
             { role: 'system', content: CHUNK_EVALUATION_SYSTEM_PROMPT },
             { role: 'user', content: promptText }
@@ -147,8 +195,11 @@ ${contextSnippet}
             maintainabilityScore: Math.min(100, Math.max(1, Number(parsed.maintainabilityScore) || 75)),
             complexityScore: Math.min(100, Math.max(1, Number(parsed.complexityScore) || 75)),
             securityScore: Math.min(100, Math.max(1, Number(parsed.securityScore) || 85)),
+            refactoringPriorityScore: Math.min(100, Math.max(1, Number(parsed.refactoringPriorityScore) || 50)),
             reasoning: parsed.reasoning || 'Evaluated via Map-Reduce AI engine.',
-            identifiedIssues: Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : []
+            identifiedIssues: Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : [],
+            primaryIssues: Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : [],
+            suggestedFixSummary: 'Evaluated via Map-Reduce AI engine.'
           };
         }
       }
@@ -170,8 +221,11 @@ ${contextSnippet}
     maintainabilityScore: maintainability,
     complexityScore: complexity,
     securityScore: security,
+    refactoringPriorityScore: 50,
     reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${nesting}.`,
-    identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : []
+    identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : [],
+    primaryIssues: nesting > 8 ? ['High nesting depth detected'] : [],
+    suggestedFixSummary: 'Maintain modular structure.'
   };
 }
 

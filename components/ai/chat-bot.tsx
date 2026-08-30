@@ -19,7 +19,7 @@ export function ChatBot() {
     {
       id: 'welcome-1',
       sender: 'bot',
-      text: "👋 Hi! I'm your **SynapseScan AI Assistant**.\n\nAsk me anything about your repository audit, code complexity, top flagged files, or technical debt remediation!",
+      text: "👋 Hi! I'm **SynapseScan Copilot** powered by **Groq (llama-3.3-70b)**.\n\nAsk me anything — codebase audit questions, any programming concept, debugging help, career advice, or general knowledge. I answer it all.",
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);
@@ -96,34 +96,67 @@ export function ChatBot() {
 
   // Quick suggestion buttons
   const suggestions = [
-    'Summarize this codebase audit',
-    'Which are the worst files to refactor?',
-    'Explain the duplication rate',
-    'How do I lower nesting depth?'
+    'What should I fix first?',
+    'Which files are grade F?',
+    'How do I reduce nesting depth in JS?',
+    'Explain async/await simply',
+    'What are the SOLID principles?',
+    'Write a TypeScript debounce function',
   ];
 
   // Helper renderer for lightweight markdown formatted response text
   const renderFormattedText = (text: string) => {
-    // Basic Markdown styling helper
+    // Process ``` code blocks first
+    if (text.includes('```')) {
+      const codeBlockParts = text.split(/(```[\s\S]*?```)/g);
+      return codeBlockParts.map((part, blockIdx) => {
+        if (part.startsWith('```') && part.endsWith('```')) {
+          const lines = part.slice(3, -3).trim().split('\n');
+          // Check if first line is language identifier
+          const firstLine = lines[0]?.trim() || '';
+          const isLangHeader = /^[a-zA-Z0-9_-]+$/.test(firstLine);
+          const codeContent = isLangHeader ? lines.slice(1).join('\n') : lines.join('\n');
+
+          return (
+            <div key={blockIdx} className="my-2 rounded-lg bg-[#0B0F17] border border-[#1F2937] overflow-hidden max-w-full">
+              {isLangHeader && (
+                <div className="bg-[#111827] px-3 py-1 border-b border-[#1F2937] text-[10px] font-mono text-emerald-400 font-semibold uppercase tracking-wider">
+                  {firstLine}
+                </div>
+              )}
+              <pre className="p-2.5 text-[11px] font-mono text-slate-200 overflow-x-auto max-w-full custom-scrollbar whitespace-pre leading-relaxed break-all">
+                <code>{codeContent}</code>
+              </pre>
+            </div>
+          );
+        }
+        return <React.Fragment key={blockIdx}>{renderMarkdownLines(part)}</React.Fragment>;
+      });
+    }
+
+    return renderMarkdownLines(text);
+  };
+
+  const renderMarkdownLines = (text: string) => {
     const lines = text.split('\n');
     return lines.map((line, idx) => {
       // Header 3
       if (line.startsWith('### ')) {
-        return <h3 key={idx} className="text-sm font-bold text-emerald-400 mt-2 mb-1">{line.replace('### ', '')}</h3>;
+        return <h3 key={idx} className="text-sm font-bold text-emerald-400 mt-2 mb-1 break-words break-all">{line.replace('### ', '')}</h3>;
       }
       // Header 4
       if (line.startsWith('#### ')) {
-        return <h4 key={idx} className="text-xs font-bold text-emerald-300 mt-2 mb-1">{line.replace('#### ', '')}</h4>;
+        return <h4 key={idx} className="text-xs font-bold text-emerald-300 mt-2 mb-1 break-words break-all">{line.replace('#### ', '')}</h4>;
       }
       // Blockquote
       if (line.startsWith('> ')) {
-        return <p key={idx} className="text-xs italic text-amber-300/90 bg-amber-500/10 border-l-2 border-amber-500 px-2 py-1 my-1 rounded-r">{line.replace('> ', '')}</p>;
+        return <p key={idx} className="text-xs italic text-amber-300/90 bg-amber-500/10 border-l-2 border-amber-500 px-2 py-1 my-1 rounded-r break-words break-all">{line.replace('> ', '')}</p>;
       }
       // Bullet list item
       if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
         const itemContent = line.trim().substring(2);
         return (
-          <li key={idx} className="text-xs text-slate-200 ml-3 list-disc my-0.5">
+          <li key={idx} className="text-xs text-slate-200 ml-3 list-disc my-0.5 break-words break-all">
             {formatBoldAndCode(itemContent)}
           </li>
         );
@@ -131,7 +164,7 @@ export function ChatBot() {
       // Numbered list item
       if (/^\d+\.\s/.test(line.trim())) {
         return (
-          <li key={idx} className="text-xs text-slate-200 ml-3 list-decimal my-0.5">
+          <li key={idx} className="text-xs text-slate-200 ml-3 list-decimal my-0.5 break-words break-all">
             {formatBoldAndCode(line.trim().replace(/^\d+\.\s/, ''))}
           </li>
         );
@@ -142,7 +175,7 @@ export function ChatBot() {
       }
       // Regular text
       return (
-        <p key={idx} className="text-xs text-slate-200 leading-relaxed my-0.5">
+        <p key={idx} className="text-xs text-slate-200 leading-relaxed my-0.5 break-words break-all">
           {formatBoldAndCode(line)}
         </p>
       );
@@ -154,10 +187,10 @@ export function ChatBot() {
     const parts = str.split(/(\*\*.*?\*\*|`.*?`)/g);
     return parts.map((part, index) => {
       if (part.startsWith('**') && part.endsWith('**')) {
-        return <strong key={index} className="font-semibold text-white">{part.slice(2, -2)}</strong>;
+        return <strong key={index} className="font-semibold text-white break-words break-all">{part.slice(2, -2)}</strong>;
       }
       if (part.startsWith('`') && part.endsWith('`')) {
-        return <code key={index} className="bg-slate-800 text-emerald-400 px-1 py-0.5 rounded font-mono text-[11px]">{part.slice(1, -1)}</code>;
+        return <code key={index} className="bg-slate-800 text-emerald-400 px-1 py-0.5 rounded font-mono text-[11px] break-words break-all max-w-full inline whitespace-pre-wrap">{part.slice(1, -1)}</code>;
       }
       return part;
     });
@@ -245,23 +278,23 @@ export function ChatBot() {
           </div>
 
           {/* Messages Body */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3.5 custom-scrollbar bg-[#0B0F17]/60">
+          <div className="flex-1 overflow-y-auto p-4 space-y-3.5 custom-scrollbar bg-[#0B0F17]/60 min-w-0">
             {messages.map((msg) => (
               <div
                 key={msg.id}
-                className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}
+                className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'} min-w-0 max-w-full`}
               >
                 <div
-                  className={`max-w-[88%] rounded-2xl p-3 shadow-md ${
+                  className={`max-w-[88%] rounded-2xl p-3 shadow-md min-w-0 overflow-hidden break-words ${
                     msg.sender === 'user'
                       ? 'bg-[#10B981] text-white rounded-br-none font-sans text-xs'
                       : 'bg-[#182232] border border-[#2A374A] text-slate-200 rounded-bl-none font-sans text-xs'
                   }`}
                 >
                   {msg.sender === 'bot' ? (
-                    <div className="space-y-1">{renderFormattedText(msg.text)}</div>
+                    <div className="space-y-1 min-w-0 max-w-full overflow-hidden">{renderFormattedText(msg.text)}</div>
                   ) : (
-                    <p className="leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                    <p className="leading-relaxed whitespace-pre-wrap break-words">{msg.text}</p>
                   )}
                 </div>
                 <span className="text-[9px] font-mono text-slate-500 mt-1 px-1">
@@ -309,7 +342,9 @@ export function ChatBot() {
               type="text"
               value={inputMessage}
               onChange={(e) => setInputMessage(e.target.value)}
-              placeholder={currentRepoName ? `Ask about ${currentRepoName}...` : "Ask a question..."}
+              placeholder={currentRepoName
+                ? `Ask about ${currentRepoName} or anything...`
+                : 'Ask me anything — code, concepts, or advice...'}
               disabled={isLoading}
               className="flex-1 bg-[#0B0F17] border border-[#1F2937] text-white placeholder-slate-500 rounded-xl px-3.5 py-2.5 text-xs font-sans focus:border-[#10B981] focus:ring-1 focus:ring-[#10B981] outline-none transition disabled:opacity-50"
             />

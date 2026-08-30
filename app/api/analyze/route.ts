@@ -12,12 +12,14 @@ import { DashboardData, CodeChunk } from '../../../lib/types';
 import { indexRepositoryChunks } from '../../../lib/rag';
 import { chunkCodeFile } from '../../../lib/chunker';
 
-export const maxDuration = 90;
+export const maxDuration = 300; // 5 minutes for large repos
 
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 85000);
+  // Dynamic timeout based on repo size — set after filePaths is known
+  // For now use 4.5 minutes max (safety buffer under maxDuration)
+  const timeoutId = setTimeout(() => controller.abort(), 270000);
 
   const defaultTenantId = 'd290f1ee-6c54-4b01-90e6-d701748f0851';
 
@@ -170,22 +172,84 @@ export async function POST(req: NextRequest) {
       throw e;
     }
 
-    // Limit to top 35 files to prevent Vercel Serverless Function Timeout (10s) and GitHub rate limits
-    const maxFilesLimit = 35;
+    // Smart tiered sampling for large repos
+    // Small repos (≤100 files): analyze everything
+    // Medium repos (101-500 files): analyze up to 150 files with smart prioritization
+    // Large repos (501-2000 files): analyze up to 100 files, deeply sampled
+    // Industry repos (2000+ files): analyze up to 80 files, most representative
+
+    const totalFileCount = filePaths.length;
+
+    let maxFilesLimit: number;
+    if (totalFileCount <= 100) {
+      maxFilesLimit = totalFileCount; // analyze all
+    } else if (totalFileCount <= 500) {
+      maxFilesLimit = 150;
+    } else if (totalFileCount <= 2000) {
+      maxFilesLimit = 100;
+    } else {
+      maxFilesLimit = 80;
+    }
+
     if (filePaths.length > maxFilesLimit) {
+      // Priority scoring per file path
+      const scorePath = (p: string): number => {
+        const lower = p.toLowerCase();
+        const ext = lower.split('.').pop() || '';
+        let score = 0;
+
+        // Extension priority — source code first
+        const extScores: Record<string, number> = {
+          tsx: 10, ts: 10, jsx: 9, js: 9,
+          py: 8, java: 8, go: 8, rs: 8,
+          cs: 7, cpp: 7, c: 7, rb: 6,
+          php: 5, swift: 5, kt: 5
+        };
+        score += extScores[ext] ?? 0;
+
+        // High-value path segments
+        if (lower.includes('/src/')) score += 5;
+        if (lower.includes('/lib/')) score += 4;
+        if (lower.includes('/core/')) score += 4;
+        if (lower.includes('/api/')) score += 4;
+        if (lower.includes('/server/')) score += 3;
+        if (lower.includes('/services/')) score += 3;
+        if (lower.includes('/controllers/')) score += 3;
+        if (lower.includes('/models/')) score += 3;
+        if (lower.includes('/utils/')) score += 2;
+        if (lower.includes('/helpers/')) score += 2;
+        if (lower.includes('/hooks/')) score += 2;
+        if (lower.includes('/components/')) score += 2;
+
+        // Deprioritize test files and config
+        if (lower.includes('/test/') || lower.includes('/tests/') ||
+            lower.includes('.test.') || lower.includes('.spec.') ||
+            lower.includes('__tests__')) score -= 3;
+        if (lower.includes('.config.') || lower.includes('.setup.')) score -= 2;
+        if (lower.includes('/stories/') || lower.includes('.stories.')) score -= 3;
+        if (lower.includes('/mock') || lower.includes('/fixture')) score -= 2;
+        if (lower.includes('/generated/') || lower.includes('/gen/')) score -= 4;
+        if (lower.includes('/vendor/') || lower.includes('/third_party/')) score -= 5;
+
+        // Shorter paths = higher-level files = more important
+        const depth = (p.match(/\//g) || []).length;
+        score += Math.max(0, 5 - depth);
+
+        return score;
+      };
+
       filePaths = filePaths
-        .sort((a, b) => {
-          const extA = a.split('.').pop()?.toLowerCase() || '';
-          const extB = b.split('.').pop()?.toLowerCase() || '';
-          // Prioritize rich source formats: tsx/ts/jsx/js/py/java
-          const priority = (ext: string) => ['tsx', 'ts', 'jsx', 'js', 'py', 'java', 'go', 'rs', 'cs', 'cpp'].indexOf(ext) !== -1 ? 1 : 0;
-          return priority(extB) - priority(extA);
-        })
-        .slice(0, maxFilesLimit);
+        .map(p => ({ path: p, score: scorePath(p) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxFilesLimit)
+        .map(x => x.path);
+
+      console.log(`[Analyze] Large repo detected: ${totalFileCount} files → sampling ${maxFilesLimit} highest-priority files`);
     }
 
     const downloadedFiles: Array<{ path: string; content: string }> = [];
-    const limit = 20;
+    // Increase concurrency for larger file sets
+    const limit = filePaths.length > 80 ? 30 : 20;
     
     for (let i = 0; i < filePaths.length; i += limit) {
       if (controller.signal.aborted) {
@@ -193,7 +257,11 @@ export async function POST(req: NextRequest) {
       }
       const chunk = filePaths.slice(i, i + limit);
       const downloadPromises = chunk.map(async (path) => {
-        const content = await downloadFileContents(owner, repo, path);
+        // Per-file timeout — skip files that take too long (prevents stalls on large repos)
+        const content = await Promise.race([
+          downloadFileContents(owner, repo, path),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000))
+        ]);
         return { path, content };
       });
 
@@ -262,11 +330,11 @@ export async function POST(req: NextRequest) {
        // AST-based Chunking
        const fileChunks: CodeChunk[] = chunkCodeFile(file.path, file.content);
  
-       // Check if we are approaching the Vercel 90-second timeout.
-       // If elapsed time exceeds 55 seconds, automatically skip LLM and fall back to local heuristics
+       // Check if we are approaching the 270-second timeout.
+       // If elapsed time exceeds 240 seconds, automatically skip LLM and fall back to local heuristics
        // to guarantee successful completion and zero serverless timeout failures!
        const elapsed = Date.now() - startTime;
-       const skipLLM = elapsed > 55000;
+       const skipLLM = elapsed > 240000;
  
        // Map Phase: Evaluate each chunk with RAG-grounded dependency context
        const chunkEvaluations = await Promise.all(
@@ -403,7 +471,9 @@ export async function POST(req: NextRequest) {
     clearTimeout(timeoutId);
     console.error('API Error in /api/analyze:', error);
     if (error.name === 'AbortError' || error.message === 'Analysis timeout') {
-      return NextResponse.json({ error: 'Analysis execution exceeded 90 seconds timeout.' }, { status: 504 });
+      return NextResponse.json({
+        error: 'Analysis timed out. This is a very large repository. Try adding a GITHUB_TOKEN to your .env.local to increase rate limits, or try analyzing a specific branch with fewer files.'
+      }, { status: 504 });
     }
     if (error.message?.includes('rate limit exceeded') || error.message?.includes('API rate limit')) {
       return NextResponse.json({ 
