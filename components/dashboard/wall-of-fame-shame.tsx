@@ -7,14 +7,17 @@ interface WallOfFameShameProps {
 }
 
 export function WallOfFameShame({ files }: WallOfFameShameProps) {
-  // Sort files to find Wall of Fame (Best files: lowest priority score, highest grades)
+  // Wall of Fame (Best files: lowest priority score, highest grades)
   const wallOfFame = [...files]
     .sort((a, b) => a.priorityScore - b.priorityScore)
     .slice(0, 3);
 
-  // Sort files to find Wall of Shame (Worst files: highest priority score, lowest grades)
+  // Wall of Shame (Worst files) — excludes anything already on the Fame list so the two
+  // never overlap on runs with 5 or fewer files.
+  const fameKeys = new Set(wallOfFame.map((f) => f.id || f.filePath));
   const wallOfShame = [...files]
     .sort((a, b) => b.priorityScore - a.priorityScore)
+    .filter((f) => !fameKeys.has(f.id || f.filePath))
     .slice(0, 3);
 
   return (
