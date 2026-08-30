@@ -150,9 +150,9 @@ export function ReviewResultsPanel({ files, filters }: ReviewResultsPanelProps) 
   };
 
   return (
-    <div className="flex-1 flex flex-col xl:flex-row gap-6 h-[600px] relative">
+    <div className="flex-1 min-w-0 flex flex-col xl:flex-row gap-6 xl:h-[600px] relative">
       {/* LEFT: File results table panel (flex-1) */}
-      <div className="flex-1 bg-[#111827] border border-[#1F2937] rounded-xl flex flex-col h-full overflow-hidden">
+      <div className="flex-none h-[420px] min-w-0 xl:flex-1 xl:h-full bg-[#111827] border border-[#1F2937] rounded-xl flex flex-col overflow-hidden">
         {/* Search Bar Input */}
         <div className="p-4 border-b border-[#1F2937] flex items-center gap-3">
           <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -209,7 +209,7 @@ export function ReviewResultsPanel({ files, filters }: ReviewResultsPanelProps) 
       </div>
 
       {/* RIGHT: Selected File Details Inspector panel */}
-      <div className="w-full xl:w-[420px] bg-[#111827] border border-[#1F2937] rounded-xl flex flex-col h-full overflow-hidden shadow-lg">
+      <div className="flex-none w-full h-[420px] xl:w-[420px] xl:h-full bg-[#111827] border border-[#1F2937] rounded-xl flex flex-col overflow-hidden shadow-lg">
         {selectedFile ? (
           <div className="flex-col h-full flex overflow-hidden">
             {/* Header file details */}
