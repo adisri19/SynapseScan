@@ -17,6 +17,10 @@ export function ReviewResultsPanel({ files, filters }: ReviewResultsPanelProps) 
   const [showDiff, setShowDiff] = useState(false);
   const [refactoredCode, setRefactoredCode] = useState('');
 
+  // Live Groq AI Explanation state
+  const [aiExplanation, setAiExplanation] = useState<string>('');
+  const [isExplaining, setIsExplaining] = useState(false);
+
   // Feature 5: Spaghetti Visualizer states
   const [showSpaghetti, setShowSpaghetti] = useState(false);
 
@@ -38,26 +42,61 @@ export function ReviewResultsPanel({ files, filters }: ReviewResultsPanelProps) 
     return true;
   });
 
-  const handleSelectFile = (file: FileMetric) => {
+  const handleSelectFile = async (file: FileMetric) => {
     setSelectedFile(file);
     setShowDiff(false);
     setRefactoredCode('');
     setShowSpaghetti(false);
+    setAiExplanation('');
+    setIsExplaining(true);
+
+    try {
+      const res = await fetch('/api/ai/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filePath: file.filePath,
+          runId: file.runId,
+          score: file.score,
+          linesOfCode: file.linesOfCode,
+          maxNestingDepth: file.maxNestingDepth,
+          outdatedPatternsCount: file.outdatedPatternsCount,
+          recommendedAction: file.recommendedAction
+        })
+      });
+      const data = await res.json();
+      if (data.success && data.text) {
+        setAiExplanation(data.text);
+      }
+    } catch (e) {
+      console.warn('Failed to fetch AI explanation for file:', e);
+    } finally {
+      setIsExplaining(false);
+    }
   };
 
   const getAnnotatedIssues = (file: FileMetric) => {
     const issues = [];
-    if (file.maxNestingDepth >= 5) {
-      issues.push(`Deep block nesting detected inside this module (reaches max depth: ${file.maxNestingDepth}).`);
+    if (file.score === 'F' || file.score === 'D') {
+      issues.push(`Critical Priority Debt (Grade ${file.score}, Priority Score: ${file.priorityScore.toFixed(0)}). Action: ${file.recommendedAction}`);
+    } else if (file.score === 'C') {
+      issues.push(`Moderate Technical Debt (Grade C, Priority Score: ${file.priorityScore.toFixed(0)}). Action: ${file.recommendedAction}`);
+    }
+    if (file.maxNestingDepth >= 4) {
+      issues.push(`High block nesting depth detected inside this module (max depth: ${file.maxNestingDepth}).`);
     }
     if (file.outdatedPatternsCount > 0) {
-      issues.push(`Identified ${file.outdatedPatternsCount} occurrences of deprecated syntax patterns (var declarations, excessive logging, callback trees).`);
+      issues.push(`Identified ${file.outdatedPatternsCount} occurrences of deprecated syntax or logging patterns.`);
     }
-    if (file.linesOfCode > 400) {
-      issues.push(`High Lines of Code footprint (${file.linesOfCode} lines). Sub-dividing into granular utilities highly advised.`);
+    if (file.linesOfCode > 300) {
+      issues.push(`High Lines of Code footprint (${file.linesOfCode} lines). Sub-dividing into granular utilities advised.`);
     }
     if (issues.length === 0) {
-      issues.push('No critical tech-debt indicators identified. Codebase structure matches quality guidelines.');
+      if (file.score === 'A' || file.score === 'B') {
+        issues.push('Low technical debt footprint. Codebase structure meets quality guidelines.');
+      } else {
+        issues.push(`Priority score of ${file.priorityScore.toFixed(0)} flagged for review.`);
+      }
     }
     return issues;
   };
@@ -318,6 +357,29 @@ export function ReviewResultsPanel({ files, filters }: ReviewResultsPanelProps) 
                         </li>
                       ))}
                     </ul>
+                  </div>
+
+                  {/* AI Lead Architect Explanation Card */}
+                  <div className="bg-[#111827] border border-indigo-500/30 rounded-lg p-4 space-y-2 shadow-lg">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+                        AI Architect Assessment (Groq Llama-3.3)
+                      </span>
+                      {isExplaining && (
+                        <span className="text-[10px] font-mono text-slate-400 animate-pulse">Analyzing...</span>
+                      )}
+                    </div>
+                    {isExplaining ? (
+                      <div className="space-y-2 animate-pulse py-1">
+                        <div className="h-3 bg-slate-800 rounded w-full" />
+                        <div className="h-3 bg-slate-800 rounded w-4/5" />
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-300 font-sans leading-relaxed">
+                        {aiExplanation || 'Select a file to run grounded AI architect analysis.'}
+                      </p>
+                    )}
                   </div>
                 </>
               )}
