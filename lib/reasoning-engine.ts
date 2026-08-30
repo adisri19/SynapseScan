@@ -30,7 +30,8 @@ export function sanitizeApiKey(key?: string): string {
  * Uses official OpenAI SDK targeting Groq API with built-in retries & backoff.
  */
 export class GroqReasoningEngine {
-  private readonly defaultModel = 'llama-3.3-70b-versatile';
+  private readonly primaryModel = 'llama-3.3-70b-versatile';
+  private readonly fallbackModel = 'llama3-70b-8192';
 
   async executeReasoning(options: ReasoningOptions): Promise<ReasoningResult> {
     const {
@@ -59,62 +60,87 @@ export class GroqReasoningEngine {
         success: true,
         text: fallbackText,
         modelUsed: 'deterministic-grounded-fallback',
-        retrievedChunksCount: context.relevantChunks.length,
+        retrievedChunksCount: (context.relevantChunks || []).length,
         groundedEvidence: evidenceText
       };
     }
 
-    try {
-      // Official OpenAI SDK instance configured for Groq with 3 automatic retries
-      const groqClient = new OpenAI({
-        apiKey,
-        baseURL: 'https://api.groq.com/openai/v1',
-        maxRetries: 3,
-        timeout: 25000
-      });
+    const groqClient = new OpenAI({
+      apiKey,
+      baseURL: 'https://api.groq.com/openai/v1',
+      maxRetries: 3,
+      timeout: 25000
+    });
 
-      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-        { role: 'system', content: systemPrompt }
-      ];
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: systemPrompt }
+    ];
 
-      if (chatHistory && chatHistory.length > 1) {
-        const historyWindow = chatHistory.slice(-6, -1);
-        for (const msg of historyWindow) {
-          const role = msg.role === 'bot' || msg.role === 'assistant' ? 'assistant' : 'user';
-          messages.push({ role, content: msg.content });
-        }
+    if (chatHistory && chatHistory.length > 1) {
+      const historyWindow = chatHistory.slice(-6, -1);
+      for (const msg of historyWindow) {
+        const role = msg.role === 'bot' || msg.role === 'assistant' ? 'assistant' : 'user';
+        messages.push({ role, content: msg.content });
       }
+    }
 
-      messages.push({ role: 'user', content: `${evidenceText}\n\nUSER REQUEST: ${query}` });
+    messages.push({ role: 'user', content: `${evidenceText}\n\nUSER REQUEST: ${query}` });
 
-      const completion = await groqClient.chat.completions.create({
-        model: this.defaultModel,
+    // Try primary model first, fallback to secondary Groq model on 404
+    let usedModel = this.primaryModel;
+    let completion;
+
+    try {
+      completion = await groqClient.chat.completions.create({
+        model: this.primaryModel,
         messages,
         temperature: 0.2,
         max_tokens: 1200
       });
-
-      const llmOutput = completion.choices[0]?.message?.content || this.generateGroundedFallback(taskType, context);
-
-      return {
-        success: true,
-        text: llmOutput,
-        modelUsed: this.defaultModel,
-        retrievedChunksCount: context.relevantChunks.length,
-        groundedEvidence: evidenceText
-      };
-
     } catch (err: any) {
-      console.warn('[Groq OpenAI SDK Warning] Groq execution error, falling back to grounded context:', err?.message || err);
-      return {
-        success: true,
-        text: this.generateGroundedFallback(taskType, context),
-        modelUsed: 'groq-error-fallback',
-        retrievedChunksCount: context.relevantChunks.length,
-        groundedEvidence: evidenceText,
-        error: err?.message || 'SDK request error'
-      };
+      if (err?.status === 404 || (err?.message && err.message.includes('404'))) {
+        console.warn(`[Groq Model Fallback] ${this.primaryModel} 404, falling back to ${this.fallbackModel}...`);
+        try {
+          usedModel = this.fallbackModel;
+          completion = await groqClient.chat.completions.create({
+            model: this.fallbackModel,
+            messages,
+            temperature: 0.2,
+            max_tokens: 1200
+          });
+        } catch (innerErr: any) {
+          console.warn('[Groq OpenAI SDK Warning] Secondary Groq model execution error, falling back to grounded context:', innerErr?.message || innerErr);
+          return {
+            success: true,
+            text: this.generateGroundedFallback(taskType, context),
+            modelUsed: 'groq-error-fallback',
+            retrievedChunksCount: (context.relevantChunks || []).length,
+            groundedEvidence: evidenceText,
+            error: innerErr?.message || 'SDK request error'
+          };
+        }
+      } else {
+        console.warn('[Groq OpenAI SDK Warning] Groq execution error, falling back to grounded context:', err?.message || err);
+        return {
+          success: true,
+          text: this.generateGroundedFallback(taskType, context),
+          modelUsed: 'groq-error-fallback',
+          retrievedChunksCount: (context.relevantChunks || []).length,
+          groundedEvidence: evidenceText,
+          error: err?.message || 'SDK request error'
+        };
+      }
     }
+
+    const llmOutput = completion?.choices?.[0]?.message?.content || this.generateGroundedFallback(taskType, context);
+
+    return {
+      success: true,
+      text: llmOutput,
+      modelUsed: usedModel,
+      retrievedChunksCount: (context.relevantChunks || []).length,
+      groundedEvidence: evidenceText
+    };
   }
 
   private getSystemPrompt(taskType: string): string {
@@ -147,8 +173,9 @@ Summarize key health metrics, overall grade, critical debt hotspots, and strateg
       return `### 🔍 Repository Assessment\nNo active audit run context found. Please run a repository audit to generate technical debt metrics.`;
     }
 
-    const overallGrade = run.overall_score || 'C';
-    const topFiles = context.topWorstFiles.map(f => `- **\`${f.file_path}\`**: Grade ${f.score} (LOC: ${f.lines_of_code}, Depth: ${f.max_nesting_depth}, Priority: ${Number(f.priority_score || 0).toFixed(0)})`).join('\n');
+    const overallGrade = run.overallScore || 'C';
+    const topFilesList = context.topFiles || [];
+    const topFiles = topFilesList.map(f => `- **\`${f.filePath}\`**: Grade ${f.score} (LOC: ${f.linesOfCode}, Depth: ${f.maxNestingDepth}, Priority: ${Number(f.priorityScore || 0).toFixed(0)})`).join('\n');
 
     switch (taskType) {
       case 'chat':
