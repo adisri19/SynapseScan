@@ -34,6 +34,10 @@ Building an AI-augmented static analysis tool sounds straightforward until you r
 * **The Issue:** Raw `fetch()` calls to LLM endpoints failed immediately when network blips or rate limits occurred, forcing immediate fallback to local heuristics.
 * **The Fix:** Replaced raw `fetch()` calls in `lib/reasoning-engine.ts` and `lib/analyzer.ts` with the official `openai` SDK pointing natively to Groq (`baseURL: 'https://api.groq.com/openai/v1'`). The SDK handles **automatic exponential backoff retries (`maxRetries: 3`)** and enforces strict JSON object schema responses natively.
 
+### 7. Enterprise Organization vs. Account URL Disambiguation
+* **The Issue:** Users pasting enterprise organization URLs (e.g. `https://github.com/expressjs` or `https://github.com/vercel`) without specifying a repository received generic `Incomplete GitHub URL` errors.
+* **The Fix:** Upgraded `parseGitHubUrl` and `parseGitLabUrl` to detect when an organization/company account is provided without a repository name. The system returns an explicit, helpful error message (`"Incomplete URL. 'expressjs' is an enterprise organization account. Please provide a specific repository URL like 'https://github.com/expressjs/express'"`) and added quick-fill enterprise repository buttons (`expressjs/express`, `vercel/next.js`, `facebook/react`) on the ingestion page.
+
 ---
 
 ## 🏗 Technical Stack
