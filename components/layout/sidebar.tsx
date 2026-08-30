@@ -71,8 +71,8 @@ export function Sidebar() {
               <LogoMark className="w-5 h-5" />
             </div>
             <div
-              className={`flex flex-col select-none whitespace-nowrap transition-opacity duration-150 ${
-                sidebarCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100 delay-100'
+              className={`flex flex-col select-none whitespace-nowrap overflow-hidden transition-[max-width,opacity] duration-150 ${
+                sidebarCollapsed ? 'max-w-0 opacity-0 pointer-events-none' : 'max-w-[10rem] opacity-100 delay-100'
               }`}
               aria-hidden={sidebarCollapsed}
             >
@@ -109,13 +109,15 @@ export function Sidebar() {
               <Link
                 key={item.label}
                 href={item.path}
-                className={`flex items-center gap-3.5 px-3.5 py-2.5 rounded-lg text-sm transition duration-150 ${sidebarCollapsed ? 'justify-center' : ''} ${activeClass}`}
+                className={`flex items-center py-2.5 rounded-lg text-sm transition duration-150 ${
+                  sidebarCollapsed ? 'justify-center px-0 gap-0' : 'px-3.5 gap-3.5'
+                } ${activeClass}`}
                 title={sidebarCollapsed ? item.label : undefined}
               >
-                <div className="min-w-[20px]">{item.icon}</div>
+                <div className="min-w-[20px] shrink-0">{item.icon}</div>
                 <span
-                  className={`font-medium whitespace-nowrap transition-opacity duration-150 ${
-                    sidebarCollapsed ? 'opacity-0' : 'opacity-100 delay-100'
+                  className={`font-medium whitespace-nowrap overflow-hidden transition-[max-width,opacity] duration-150 ${
+                    sidebarCollapsed ? 'max-w-0 opacity-0' : 'max-w-[10rem] opacity-100 delay-100'
                   }`}
                 >
                   {item.label}
@@ -128,13 +130,13 @@ export function Sidebar() {
 
       {/* Bottom Section */}
       <div className="p-3 border-t border-[#1F2937] space-y-3">
-        <div className="flex items-center gap-3 px-2 overflow-hidden">
+        <div className={`flex items-center overflow-hidden ${sidebarCollapsed ? 'justify-center px-0 gap-0' : 'px-2 gap-3'}`}>
           <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center font-bold text-white text-sm shrink-0">
             CP
           </div>
           <div
-            className={`flex flex-col overflow-hidden transition-opacity duration-150 ${
-              sidebarCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100 delay-100'
+            className={`flex flex-col overflow-hidden transition-[max-width,opacity] duration-150 ${
+              sidebarCollapsed ? 'max-w-0 opacity-0 pointer-events-none' : 'max-w-[10rem] opacity-100 delay-100'
             }`}
             aria-hidden={sidebarCollapsed}
           >
@@ -145,15 +147,17 @@ export function Sidebar() {
         
         <button
           onClick={handleLogout}
-          className={`w-full flex items-center gap-3.5 px-3.5 py-2.5 text-red-400 hover:text-red-300 hover:bg-red-950/20 rounded-lg text-sm transition duration-150 font-medium ${sidebarCollapsed ? 'justify-center' : ''}`}
+          className={`w-full flex items-center py-2.5 text-red-400 hover:text-red-300 hover:bg-red-950/20 rounded-lg text-sm transition duration-150 font-medium ${
+            sidebarCollapsed ? 'justify-center px-0 gap-0' : 'px-3.5 gap-3.5'
+          }`}
           title={sidebarCollapsed ? 'Logout' : undefined}
         >
           <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
           </svg>
           <span
-            className={`font-semibold whitespace-nowrap transition-opacity duration-150 ${
-              sidebarCollapsed ? 'opacity-0' : 'opacity-100 delay-100'
+            className={`font-semibold whitespace-nowrap overflow-hidden transition-[max-width,opacity] duration-150 ${
+              sidebarCollapsed ? 'max-w-0 opacity-0' : 'max-w-[10rem] opacity-100 delay-100'
             }`}
           >
             Logout
