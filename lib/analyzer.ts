@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import OpenAI from 'openai';
 import { CodeChunk, DuplicationBlock, FileMetric, DebtCategories } from './types';
 import { retrieveRelevantChunks, formatRagContext } from './rag';
-import { sanitizeApiKey } from './reasoning-engine';
+import { sanitizeApiKey, stripThinkingTags } from './reasoning-engine';
 
 export interface ChunkLLMEvaluation {
   chunkIndex: number;
@@ -173,8 +173,9 @@ ${contextSnippet}
         }
       }
 
-      const contentStr = completion.choices[0]?.message?.content;
-      if (contentStr) {
+      const rawContentStr = completion?.choices[0]?.message?.content;
+      if (rawContentStr) {
+        const contentStr = stripThinkingTags(rawContentStr);
         const parsed = JSON.parse(contentStr);
         return {
           chunkIndex: chunk.chunkIndex,
