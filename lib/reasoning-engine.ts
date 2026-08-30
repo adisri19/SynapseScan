@@ -30,8 +30,9 @@ export function sanitizeApiKey(key?: string): string {
  * Uses official OpenAI SDK targeting Groq API with built-in retries & backoff.
  */
 export class GroqReasoningEngine {
-  private readonly primaryModel = 'llama-3.3-70b-versatile';
-  private readonly fallbackModel = 'llama3-70b-8192';
+  private readonly primaryModel = 'llama-3.1-8b-instant';
+  private readonly secondaryModel = 'llama-3.3-70b-versatile';
+  private readonly tertiaryModel = 'llama3-8b-8192';
 
   async executeReasoning(options: ReasoningOptions): Promise<ReasoningResult> {
     const {
@@ -188,8 +189,13 @@ Summarize key health metrics, overall grade, critical debt hotspots, and strateg
 #### ⚠️ High Priority Files Requiring Attention:
 ${topFiles || '- No critical debt files identified.'}`;
 
-      case 'explain':
-        return `This file displays elevated structural complexity with depth factor ${context.targetFileMetric?.max_nesting_depth || 1}. Recommended remediation: Modularize nested control blocks and sub-divide utilities to improve maintainability.`;
+      case 'explain': {
+        const file = context.targetFileMetric || context.topFiles?.[0];
+        if (file) {
+          return `File \`${file.filePath}\` is rated **Grade ${file.score}** (${file.linesOfCode} LOC, Max Nesting Depth: ${file.maxNestingDepth}, ${file.outdatedPatternsCount} outdated patterns). Priority Score: ${Number(file.priorityScore || 0).toFixed(0)}. ${file.recommendedAction}`;
+        }
+        return `File analysis indicates a maintenance footprint matching Grade ${overallGrade} quality guidelines. Review function boundaries and control flows.`;
+      }
 
       default:
         return `Repository Overall Health: Grade **${overallGrade}**. Total LOC: ${run.total_loc}. Estimated Remediation Effort: ${run.estimated_debt_hours} Hours.`;
