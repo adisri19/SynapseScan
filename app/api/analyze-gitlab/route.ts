@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { parseGitLabUrl, fetchGitLabRepositoryTree, downloadGitLabFileContents } from '../../../lib/gitlab';
-import { calculateNestingDepth, detectDuplications, scanOutdatedPatterns, scoreCodebase } from '../../../lib/analyzer';
+import { detectDuplications, scanOutdatedPatterns, scoreCodebase } from '../../../lib/analyzer';
 import { query, pool } from '../../../lib/db';
 import { DashboardData } from '../../../lib/types';
 

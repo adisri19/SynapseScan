@@ -4,7 +4,7 @@ import {
   detectDuplications, 
   evaluateChunkWithRAG, 
   reduceChunkEvaluationsToFileGrade, 
-  reduceFileResultsToRepositoryScore,
+  scoreCodebase,
   FileAnalysisResult
 } from '../../../lib/analyzer';
 import { query, pool } from '../../../lib/db';
