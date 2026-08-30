@@ -153,27 +153,24 @@ ${contextSnippet}
         timeout: 25000
       });
 
+      const evalModels = ['qwen/qwen3.6-27b', 'openai/gpt-oss-20b', 'groq/compound-mini'];
       let completion;
-      try {
-        completion = await groqClient.chat.completions.create({
-          model: 'llama-3.1-8b-instant',
-          messages: [
-            { role: 'system', content: CHUNK_EVALUATION_SYSTEM_PROMPT },
-            { role: 'user', content: promptText }
-          ],
-          temperature: 0.1,
-          response_format: { type: 'json_object' }
-        });
-      } catch (e) {
-        completion = await groqClient.chat.completions.create({
-          model: 'llama3-70b-8192',
-          messages: [
-            { role: 'system', content: CHUNK_EVALUATION_SYSTEM_PROMPT },
-            { role: 'user', content: promptText }
-          ],
-          temperature: 0.1,
-          response_format: { type: 'json_object' }
-        });
+
+      for (const m of evalModels) {
+        try {
+          completion = await groqClient.chat.completions.create({
+            model: m,
+            messages: [
+              { role: 'system', content: CHUNK_EVALUATION_SYSTEM_PROMPT },
+              { role: 'user', content: promptText }
+            ],
+            temperature: 0.1,
+            response_format: { type: 'json_object' }
+          });
+          if (completion) break;
+        } catch (e) {
+          // try next active model
+        }
       }
 
       const contentStr = completion.choices[0]?.message?.content;

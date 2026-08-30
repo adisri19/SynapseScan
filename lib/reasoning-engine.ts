@@ -30,7 +30,13 @@ export function sanitizeApiKey(key?: string): string {
  * Uses official OpenAI SDK targeting Groq API with built-in retries & backoff.
  */
 export class GroqReasoningEngine {
-  private readonly models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'llama3-70b-8192', 'llama3-8b-8192'];
+  private readonly models = [
+    'qwen/qwen3.6-27b',
+    'openai/gpt-oss-20b',
+    'groq/compound-mini',
+    'qwen/qwen3.8-27b',
+    'llama-3.1-8b-instant'
+  ];
 
   async executeReasoning(options: ReasoningOptions): Promise<ReasoningResult> {
     const {
