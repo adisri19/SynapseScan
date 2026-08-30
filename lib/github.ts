@@ -28,7 +28,8 @@ export function parseGitHubUrl(url: string): { owner: string; repo: string; bran
 
     const parts = parsed.pathname.split('/').filter(Boolean);
     if (parts.length < 2) {
-      throw new Error('Incomplete GitHub URL');
+      const ownerOnly = parts[0] || 'owner';
+      throw new Error(`Incomplete URL. You entered an account or organization ('${ownerOnly}'). Please provide a specific repository URL like 'https://github.com/${ownerOnly}/<repository-name>' or 'owner/repo'.`);
     }
 
     const owner = parts[0];
