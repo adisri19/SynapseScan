@@ -60,13 +60,21 @@ export function GitHubUrlForm({ onSubmit, isLoading, error }: GitHubUrlFormProps
           </div>
 
           <div className="mt-2.5 flex items-center gap-2 flex-wrap text-[11px] font-mono text-slate-500">
-            <span>Format: <code className="text-slate-400">https://github.com/owner/repo</code> or <code className="text-slate-400">owner/repo</code>. Examples:</span>
+            <span>Supports Enterprise Orgs & Personal Repos (<code className="text-slate-400">org/repo</code>). Try:</span>
             <button
               type="button"
               onClick={() => setRepoUrl('https://github.com/expressjs/express')}
               className="hover:text-[#10B981] underline cursor-pointer"
             >
               expressjs/express
+            </button>
+            <span>•</span>
+            <button
+              type="button"
+              onClick={() => setRepoUrl('https://github.com/vercel/next.js')}
+              className="hover:text-[#10B981] underline cursor-pointer"
+            >
+              vercel/next.js
             </button>
             <span>•</span>
             <button
