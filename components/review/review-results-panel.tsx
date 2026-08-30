@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { FileMetric, ReviewFilters } from '../../lib/types';
 import { GradeBadge } from '../ui/grade-badge';
 import { ReviewStatusTag } from '../ui/review-status-tag';
@@ -16,9 +16,14 @@ export function ReviewResultsPanel({ files, filters }: ReviewResultsPanelProps) 
   const [isFixing, setIsFixing] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
   const [refactoredCode, setRefactoredCode] = useState('');
+  const [applyConfirmed, setApplyConfirmed] = useState(false);
 
   // Feature 5: Spaghetti Visualizer states
   const [showSpaghetti, setShowSpaghetti] = useState(false);
+
+  // Guards against a slower earlier /api/ai/refactor response landing after the
+  // user has already moved to a different file.
+  const autoFixRequestRef = useRef(0);
 
   // Apply search filtering client-side
   const filteredFiles = files.filter((file) => {
@@ -39,6 +44,7 @@ export function ReviewResultsPanel({ files, filters }: ReviewResultsPanelProps) 
   });
 
   const handleSelectFile = (file: FileMetric) => {
+    autoFixRequestRef.current++;
     setSelectedFile(file);
     setShowDiff(false);
     setRefactoredCode('');
@@ -65,22 +71,28 @@ export function ReviewResultsPanel({ files, filters }: ReviewResultsPanelProps) 
   // Feature 3: Run Auto-Fix and generate refactored code payload
   const handleAutoFix = async () => {
     if (!selectedFile) return;
+    const requestId = ++autoFixRequestRef.current;
+    const requestedFor = selectedFile.filePath;
     setIsFixing(true);
     try {
       const response = await fetch('/api/ai/refactor', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath: selectedFile.filePath })
+        body: JSON.stringify({ filePath: requestedFor })
       });
       const data = await response.json();
+      if (requestId !== autoFixRequestRef.current) return;
       if (response.ok) {
         setRefactoredCode(data.text || '// Refactor generated successfully');
         setShowDiff(true);
       }
     } catch (err) {
+      if (requestId !== autoFixRequestRef.current) return;
       console.error('Auto fix query failed:', err);
     } finally {
-      setIsFixing(false);
+      if (requestId === autoFixRequestRef.current) {
+        setIsFixing(false);
+      }
     }
   };
 
@@ -344,7 +356,10 @@ export function ReviewResultsPanel({ files, filters }: ReviewResultsPanelProps) 
         <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-[#111827] border border-[#1F2937] rounded-2xl p-6 max-w-4xl w-full h-[85vh] relative shadow-2xl overflow-hidden flex flex-col">
             <button
-              onClick={() => setShowDiff(false)}
+              onClick={() => {
+                setApplyConfirmed(false);
+                setShowDiff(false);
+              }}
               className="absolute top-4 right-4 text-slate-400 hover:text-white transition focus:outline-none"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -383,16 +398,28 @@ export function ReviewResultsPanel({ files, filters }: ReviewResultsPanelProps) 
             </div>
 
             <div className="border-t border-[#1F2937] pt-4 mt-4 flex justify-end gap-3 shrink-0">
+              {applyConfirmed && (
+                <span className="mr-auto flex items-center gap-2 text-[11px] font-mono text-emerald-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  Refactor staged in workspace (simulation)
+                </span>
+              )}
               <button
-                onClick={() => setShowDiff(false)}
+                onClick={() => {
+                  setApplyConfirmed(false);
+                  setShowDiff(false);
+                }}
                 className="px-4 py-2 text-slate-400 hover:text-white transition text-xs font-semibold"
               >
                 Close Diff
               </button>
               <button
                 onClick={() => {
-                  alert('Refactored code committed into workspace successfully! (Simulation)');
-                  setShowDiff(false);
+                  setApplyConfirmed(true);
+                  setTimeout(() => {
+                    setApplyConfirmed(false);
+                    setShowDiff(false);
+                  }, 1400);
                 }}
                 className="bg-[#10B981] hover:bg-emerald-400 active:bg-emerald-600 transition rounded-lg text-white text-xs font-bold px-4 py-2"
               >
