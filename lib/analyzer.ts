@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { CodeChunk, DuplicationBlock, FileMetric, DebtCategories } from './types';
 import { retrieveRelevantChunks, formatRagContext } from './rag';
+import { sanitizeApiKey } from './reasoning-engine';
 
 export interface ChunkLLMEvaluation {
   chunkIndex: number;
@@ -8,6 +9,7 @@ export interface ChunkLLMEvaluation {
   maintainabilityScore: number; // 1 - 100
   complexityScore: number;       // 1 - 100
   securityScore: number;         // 1 - 100
+  maxNestingDepth: number;       // 1 - 10+
   reasoning: string;
   identifiedIssues: string[];
 }
@@ -50,16 +52,36 @@ CRITICAL INSTRUCTIONS:
    - maintainabilityScore (1 = unmaintainable, 100 = perfectly structured & clean)
    - complexityScore (1 = extremely high cognitive/cyclomatic complexity, 100 = clean & linear)
    - securityScore (1 = severe vulnerabilities present, 100 = highly secure & sanitized)
-2. Consider context from dependent/related chunks when analyzing symbols and imports.
-3. Output strictly valid JSON matching this schema:
+2. Evaluate maxNestingDepth:
+   - maxNestingDepth (integer count of deepest nested block/control-flow layer, e.g. 1 for linear functions, 5+ for deeply nested loops/conditionals)
+3. Consider context from dependent/related chunks when analyzing symbols and imports.
+4. Output strictly valid JSON matching this schema:
 {
   "maintainabilityScore": number,
   "complexityScore": number,
   "securityScore": number,
+  "maxNestingDepth": number,
   "reasoning": "Concise architectural explanation (2-3 sentences)",
   "identifiedIssues": ["Issue 1", "Issue 2"]
 }
 `;
+
+export function shouldEvaluateWithLLM(chunk: CodeChunk): boolean {
+  const content = chunk.content.trim();
+  const loc = content.split('\n').length;
+
+  if (loc <= 5 && !chunk.symbolName) return false;
+
+  const lines = content.split('\n').map(l => l.trim());
+  const isAllImports = lines.every(l => l.startsWith('import ') || l.startsWith('export ') || l === '' || l.startsWith('//') || l.startsWith('/*') || l.startsWith('*'));
+  if (isAllImports) return false;
+
+  if ((chunk.filePath.endsWith('.json') || chunk.filePath.endsWith('.yaml') || chunk.filePath.endsWith('.config.js') || chunk.filePath.endsWith('.config.ts')) && loc <= 25) {
+    return false;
+  }
+
+  return true;
+}
 
 /**
  * MAP PHASE: Evaluates an individual code chunk using LLM reasoning + RAG retrieved context
@@ -70,9 +92,13 @@ export async function evaluateChunkWithRAG(
   groqApiKey?: string,
   skipLLM?: boolean
 ): Promise<ChunkLLMEvaluation> {
-  if (skipLLM) {
+  const needsLLM = !skipLLM && shouldEvaluateWithLLM(chunk);
+
+  if (!needsLLM) {
     const loc = chunk.content.split('\n').length;
-    const nesting = (chunk.content.match(/\{/g) || []).length;
+    // Indent-based / structure-based depth calculation for fallback
+    const indentDepths = chunk.content.split('\n').map(l => Math.floor((l.match(/^\s*/)?.[0].length || 0) / 2));
+    const nesting = Math.min(10, Math.max(1, Math.max(...indentDepths, 1)));
     const maintainability = Math.max(30, 95 - loc);
     const complexity = Math.max(20, 90 - nesting * 4);
     const security = chunk.content.includes('eval(') || chunk.content.includes('innerHTML') ? 40 : 88;
@@ -83,8 +109,9 @@ export async function evaluateChunkWithRAG(
       maintainabilityScore: maintainability,
       complexityScore: complexity,
       securityScore: security,
-      reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${nesting}.`,
-      identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : []
+      maxNestingDepth: nesting,
+      reasoning: `Structural analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity depth ${nesting}.`,
+      identifiedIssues: nesting >= 5 ? ['High nesting depth detected'] : []
     };
   }
 
@@ -115,7 +142,7 @@ ${chunk.content}
 ${contextSnippet}
 `;
 
-  const apiKey = groqApiKey || process.env.GROQ_API_KEY;
+  const apiKey = sanitizeApiKey(groqApiKey || process.env.GROQ_API_KEY);
 
   if (apiKey) {
     try {
@@ -147,10 +174,14 @@ ${contextSnippet}
             maintainabilityScore: Math.min(100, Math.max(1, Number(parsed.maintainabilityScore) || 75)),
             complexityScore: Math.min(100, Math.max(1, Number(parsed.complexityScore) || 75)),
             securityScore: Math.min(100, Math.max(1, Number(parsed.securityScore) || 85)),
+            maxNestingDepth: Math.max(1, Number(parsed.maxNestingDepth) || 1),
             reasoning: parsed.reasoning || 'Evaluated via Map-Reduce AI engine.',
             identifiedIssues: Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : []
           };
         }
+      } else {
+        const errText = await response.text();
+        console.warn(`[Groq LLM Map Evaluation Warning] HTTP ${response.status}:`, errText);
       }
     } catch (err) {
       console.warn('Groq LLM Map Evaluation error, falling back to deterministic AST heuristic:', err);
@@ -159,7 +190,8 @@ ${contextSnippet}
 
   // Fallback heuristic scoring if Groq API key is omitted or fails
   const loc = chunk.content.split('\n').length;
-  const nesting = (chunk.content.match(/\{/g) || []).length;
+  const indentDepths = chunk.content.split('\n').map(l => Math.floor((l.match(/^\s*/)?.[0].length || 0) / 2));
+  const nesting = Math.min(10, Math.max(1, Math.max(...indentDepths, 1)));
   const maintainability = Math.max(30, 95 - loc);
   const complexity = Math.max(20, 90 - nesting * 4);
   const security = chunk.content.includes('eval(') || chunk.content.includes('innerHTML') ? 40 : 88;
@@ -170,8 +202,9 @@ ${contextSnippet}
     maintainabilityScore: maintainability,
     complexityScore: complexity,
     securityScore: security,
-    reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${nesting}.`,
-    identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : []
+    maxNestingDepth: nesting,
+    reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity depth ${nesting}.`,
+    identifiedIssues: nesting >= 5 ? ['High nesting depth detected'] : []
   };
 }
 
@@ -184,7 +217,9 @@ export function reduceChunkEvaluationsToFileGrade(
   fileContent: string
 ): FileAnalysisResult {
   const loc = fileContent.split('\n').length;
-  const nestingDepth = calculateNestingDepth(fileContent);
+  const nestingDepth = chunkEvaluations.length > 0 
+    ? Math.max(...chunkEvaluations.map(c => c.maxNestingDepth || 1))
+    : 1;
 
   if (chunkEvaluations.length === 0) {
     return {
@@ -309,32 +344,6 @@ export function reduceFileResultsToRepositoryScore(
     files: fileMetrics,
     fileResults
   };
-}
-
-/**
- * Legacy AST Nesting Depth Helper preserved for structural fallback calculations
- */
-export function calculateNestingDepth(code: string): number {
-  const cleanCode = code
-    .replace(/\/\/[^\n]*/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '');
-
-  let maxDepth = 0;
-  let currentDepth = 0;
-
-  for (let i = 0; i < cleanCode.length; i++) {
-    const char = cleanCode[i];
-    if (char === '{') {
-      currentDepth++;
-      if (currentDepth > maxDepth) {
-        maxDepth = currentDepth;
-      }
-    } else if (char === '}') {
-      currentDepth--;
-    }
-  }
-
-  return maxDepth;
 }
 
 export function detectDuplications(files: Array<{ path: string; content: string }>): DuplicationBlock[] {
