@@ -30,9 +30,7 @@ export function sanitizeApiKey(key?: string): string {
  * Uses official OpenAI SDK targeting Groq API with built-in retries & backoff.
  */
 export class GroqReasoningEngine {
-  private readonly primaryModel = 'llama-3.1-8b-instant';
-  private readonly secondaryModel = 'llama-3.3-70b-versatile';
-  private readonly tertiaryModel = 'llama3-8b-8192';
+  private readonly models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'llama3-70b-8192', 'llama3-8b-8192'];
 
   async executeReasoning(options: ReasoningOptions): Promise<ReasoningResult> {
     const {
@@ -69,7 +67,7 @@ export class GroqReasoningEngine {
     const groqClient = new OpenAI({
       apiKey,
       baseURL: 'https://api.groq.com/openai/v1',
-      maxRetries: 3,
+      maxRetries: 2,
       timeout: 25000
     });
 
@@ -87,60 +85,41 @@ export class GroqReasoningEngine {
 
     messages.push({ role: 'user', content: `${evidenceText}\n\nUSER REQUEST: ${query}` });
 
-    // Try primary model first, fallback to secondary Groq model on 404
-    let usedModel = this.primaryModel;
-    let completion;
+    // Try models sequentially
+    let lastError: any = null;
+    for (const modelName of this.models) {
+      try {
+        const completion = await groqClient.chat.completions.create({
+          model: modelName,
+          messages,
+          temperature: 0.2,
+          max_tokens: 1200
+        });
 
-    try {
-      completion = await groqClient.chat.completions.create({
-        model: this.primaryModel,
-        messages,
-        temperature: 0.2,
-        max_tokens: 1200
-      });
-    } catch (err: any) {
-      if (err?.status === 404 || (err?.message && err.message.includes('404'))) {
-        console.warn(`[Groq Model Fallback] ${this.primaryModel} 404, falling back to ${this.fallbackModel}...`);
-        try {
-          usedModel = this.fallbackModel;
-          completion = await groqClient.chat.completions.create({
-            model: this.fallbackModel,
-            messages,
-            temperature: 0.2,
-            max_tokens: 1200
-          });
-        } catch (innerErr: any) {
-          console.warn('[Groq OpenAI SDK Warning] Secondary Groq model execution error, falling back to grounded context:', innerErr?.message || innerErr);
+        const llmOutput = completion?.choices?.[0]?.message?.content;
+        if (llmOutput) {
           return {
             success: true,
-            text: this.generateGroundedFallback(taskType, context),
-            modelUsed: 'groq-error-fallback',
+            text: llmOutput,
+            modelUsed: modelName,
             retrievedChunksCount: (context.relevantChunks || []).length,
-            groundedEvidence: evidenceText,
-            error: innerErr?.message || 'SDK request error'
+            groundedEvidence: evidenceText
           };
         }
-      } else {
-        console.warn('[Groq OpenAI SDK Warning] Groq execution error, falling back to grounded context:', err?.message || err);
-        return {
-          success: true,
-          text: this.generateGroundedFallback(taskType, context),
-          modelUsed: 'groq-error-fallback',
-          retrievedChunksCount: (context.relevantChunks || []).length,
-          groundedEvidence: evidenceText,
-          error: err?.message || 'SDK request error'
-        };
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[Groq Model Try Failed] Model '${modelName}' failed:`, err?.message || err);
       }
     }
 
-    const llmOutput = completion?.choices?.[0]?.message?.content || this.generateGroundedFallback(taskType, context);
-
+    console.warn('[Groq OpenAI SDK Warning] All Groq models failed, returning grounded fallback:', lastError?.message || lastError);
     return {
       success: true,
-      text: llmOutput,
-      modelUsed: usedModel,
+      text: this.generateGroundedFallback(taskType, context),
+      modelUsed: 'groq-error-fallback',
       retrievedChunksCount: (context.relevantChunks || []).length,
-      groundedEvidence: evidenceText
+      groundedEvidence: evidenceText,
+      error: lastError?.message || 'SDK request error'
     };
   }
 
@@ -179,15 +158,31 @@ Summarize key health metrics, overall grade, critical debt hotspots, and strateg
     const topFiles = topFilesList.map(f => `- **\`${f.filePath}\`**: Grade ${f.score} (LOC: ${f.linesOfCode}, Depth: ${f.maxNestingDepth}, Priority: ${Number(f.priorityScore || 0).toFixed(0)})`).join('\n');
 
     switch (taskType) {
-      case 'chat':
+      case 'chat': {
+        const queryLower = (context.query || '').toLowerCase();
+        const matchedFile = topFilesList.find(f => f.filePath && queryLower.includes(f.filePath.toLowerCase()));
+
+        if (matchedFile) {
+          return `### 📄 File Analysis: \`${matchedFile.filePath}\`
+- **Grade**: **Grade ${matchedFile.score}** (Priority Score: ${Number(matchedFile.priorityScore || 0).toFixed(0)})
+- **Lines of Code**: ${matchedFile.linesOfCode} lines
+- **Max Nesting Depth**: ${matchedFile.maxNestingDepth}
+- **Outdated Syntax Patterns**: ${matchedFile.outdatedPatternsCount}
+- **Recommended Action**: ${matchedFile.recommendedAction}
+
+#### 💡 Architectural Insight:
+File \`${matchedFile.filePath}\` received **Grade ${matchedFile.score}** because it has ${matchedFile.linesOfCode} lines of code and a max control-flow nesting depth of ${matchedFile.maxNestingDepth}. ${matchedFile.score === 'A' || matchedFile.score === 'B' ? 'This module has a low technical debt footprint and matches code quality guidelines.' : 'Refactoring complex conditional branches into smaller helper functions is advised.'}`;
+        }
+
         return `### 🔍 Repository Audit Overview
 - **Overall Codebase Grade**: Grade **${overallGrade}**
-- **Total Lines of Code**: ${run.total_loc?.toLocaleString() || 0}
-- **Average Nesting Depth**: ${Number(run.avg_complexity || 0).toFixed(1)}
-- **Estimated Remediation Debt**: ${Number(run.estimated_debt_hours || 0).toFixed(0)} Hours
+- **Total Lines of Code**: ${run.totalLoc || run.total_loc || 0}
+- **Average Nesting Depth**: ${Number(run.avgComplexity || run.avg_complexity || 0).toFixed(1)}
+- **Estimated Remediation Debt**: ${Number(run.estimatedDebtHours || run.estimated_debt_hours || 0).toFixed(0)} Hours
 
 #### ⚠️ High Priority Files Requiring Attention:
 ${topFiles || '- No critical debt files identified.'}`;
+      }
 
       case 'explain': {
         const file = context.targetFileMetric || context.topFiles?.[0];
