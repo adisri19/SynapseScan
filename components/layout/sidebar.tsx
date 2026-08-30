@@ -65,8 +65,10 @@ export function Sidebar() {
     <aside className={`h-screen bg-[#0B0F17] border-r border-[#1F2937] flex flex-col justify-between shrink-0 overflow-x-hidden ${sidebarWidth} transition-[width] duration-200 ease-out z-30`}>
       {/* Top Section */}
       <div>
-        <div className="h-16 flex items-center justify-between px-4 border-b border-[#1F2937]">
-          <div className="flex items-center gap-3 overflow-hidden">
+        <div className={`h-16 flex items-center border-b border-[#1F2937] ${
+          sidebarCollapsed ? 'justify-center px-0' : 'justify-between px-4'
+        }`}>
+          <div className={`flex items-center gap-3 overflow-hidden ${sidebarCollapsed ? 'hidden' : ''}`}>
             <div className="w-9 h-9 min-w-[36px] bg-[#10B981]/20 border border-[#10B981]/30 rounded-lg flex items-center justify-center text-[#10B981]">
               <LogoMark className="w-5 h-5" />
             </div>
@@ -83,7 +85,9 @@ export function Sidebar() {
           
           <button
             onClick={toggleSidebar}
-            className="w-6 h-6 rounded border border-[#1F2937] hover:bg-slate-800/40 text-slate-400 flex items-center justify-center transition focus:outline-none"
+            className="w-6 h-6 shrink-0 rounded border border-[#1F2937] hover:bg-slate-800/40 text-slate-400 flex items-center justify-center transition focus:outline-none"
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             {sidebarCollapsed ? (
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
