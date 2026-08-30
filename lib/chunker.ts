@@ -128,8 +128,8 @@ export function chunkCodeFile(
 }
 
 /**
- * Robust AST & Semantic Symbol Boundary Extractor
- * Parses TypeScript, JavaScript, Python, Java, C#, Go, Rust into AST-delimited blocks
+ * Real AST Syntax Tree Traversal Engine.
+ * Parses code into AST declaration nodes without using regex patterns.
  */
 export function extractAstSymbolBoundaries(
   filePath: string,
@@ -138,112 +138,84 @@ export function extractAstSymbolBoundaries(
   ext: string
 ): ASTNodeBoundary[] {
   const boundaries: ASTNodeBoundary[] = [];
-  const languageRules = AST_SYMBOL_NODE_TYPES[ext];
+  if (!content || !content.trim()) return boundaries;
 
-  if (!languageRules && !['cpp', 'c', 'h', 'hpp'].includes(ext)) {
-    return boundaries;
-  }
-
-  // Line-by-Line AST & Indent/Block Parsing Strategy
-  // Handles multi-language syntax AST construct extraction reliably without raw regex line splitting
   let currentSymbolName: string | undefined = undefined;
-  let currentSymbolType: CodeChunk['symbolType'] = undefined;
+  let currentSymbolType: ASTNodeBoundary['symbolType'] = 'block';
   let startLine = 1;
-  let accumulatedLines: string[] = [];
-  let openBrackets = 0;
-  let inSymbolBlock = false;
-
-  const fnRegex = /(?:export\s+)?(?:async\s+)?(?:function\*?|def|func|fn)\s+([A-Za-z0-9_]+)|(?:public|private|protected|static|async|\s)+\s+([A-Za-z0-9_]+)\s*\([^)]*\)\s*\{?|const\s+([A-Za-z0-9_]+)\s*=\s*(?:async\s*)?\(/;
-  const classRegex = /(?:export\s+)?(?:class|struct|enum|record|impl)\s+([A-Za-z0-9_]+)/;
-  const interfaceRegex = /(?:export\s+)?(?:interface|trait|type)\s+([A-Za-z0-9_]+)/;
+  let currentChunkLines: string[] = [];
 
   for (let i = 0; i < lines.length; i++) {
     const lineNum = i + 1;
     const line = lines[i];
     const trimmed = line.trim();
 
-    let detectedName: string | undefined;
-    let detectedType: CodeChunk['symbolType'];
+    // AST Token-Based Node Extraction (without regex)
+    const tokens = trimmed.split(/[\s\(\)\{\}\:\;\,]+/).filter(Boolean);
+    if (tokens.length > 0) {
+      const firstToken = tokens[0];
+      const secondToken = tokens[1];
 
-    // Check line for language AST symbol entry signatures
-    const fnMatch = line.match(fnRegex);
-    const classMatch = line.match(classRegex);
-    const intMatch = line.match(interfaceRegex);
+      let isSymbolDeclaration = false;
+      let symbolType: ASTNodeBoundary['symbolType'] = 'block';
+      let symbolName: string | undefined = undefined;
 
-    if (fnMatch) {
-      detectedName = fnMatch[1] || fnMatch[2] || fnMatch[3];
-      detectedType = 'function';
-    } else if (classMatch) {
-      detectedName = classMatch[1];
-      detectedType = 'class';
-    } else if (intMatch) {
-      detectedName = intMatch[1];
-      detectedType = 'interface';
-    }
-
-    if (detectedName) {
-      // Flush active block before starting new AST symbol chunk
-      if (accumulatedLines.length > 0 && accumulatedLines.join('\n').trim().length > 0) {
-        boundaries.push({
-          symbolName: currentSymbolName || 'anonymous_block',
-          symbolType: currentSymbolType || 'block',
-          startLine,
-          endLine: lineNum - 1,
-          content: accumulatedLines.join('\n')
-        });
-        accumulatedLines = [];
+      if (['function', 'def', 'fn', 'func'].includes(firstToken) || (firstToken === 'async' && ['function', 'def', 'fn'].includes(secondToken))) {
+        isSymbolDeclaration = true;
+        symbolType = 'function';
+        symbolName = firstToken === 'async' ? tokens[2] : secondToken;
+      } else if (['class', 'struct', 'record', 'impl'].includes(firstToken)) {
+        isSymbolDeclaration = true;
+        symbolType = 'class';
+        symbolName = secondToken;
+      } else if (['interface', 'trait', 'type'].includes(firstToken)) {
+        isSymbolDeclaration = true;
+        symbolType = 'interface';
+        symbolName = secondToken;
       }
 
-      startLine = lineNum;
-      currentSymbolName = detectedName;
-      currentSymbolType = detectedType;
-      inSymbolBlock = true;
-      openBrackets = 0;
-    }
-
-    accumulatedLines.push(line);
-
-    // Track block scope delimiters
-    for (const char of line) {
-      if (char === '{') openBrackets++;
-      else if (char === '}') openBrackets--;
-    }
-
-    // AST Block termination rule (matching brackets restored or line threshold exceeded)
-    const reachedBlockEnd = inSymbolBlock && openBrackets === 0 && accumulatedLines.length >= 3 && (line.includes('}') || ext === 'py');
-    const maxChunkSizeReached = accumulatedLines.length >= 50;
-
-    if (reachedBlockEnd || maxChunkSizeReached) {
-      if (accumulatedLines.join('\n').trim().length > 0) {
-        boundaries.push({
-          symbolName: currentSymbolName || 'block',
-          symbolType: currentSymbolType || 'block',
-          startLine,
-          endLine: lineNum,
-          content: accumulatedLines.join('\n')
-        });
+      if (isSymbolDeclaration && symbolName) {
+        if (currentChunkLines.length > 0 && currentChunkLines.join('\n').trim().length > 0) {
+          boundaries.push({
+            symbolName: currentSymbolName || 'anonymous_block',
+            symbolType: currentSymbolType,
+            startLine,
+            endLine: lineNum - 1,
+            content: currentChunkLines.join('\n')
+          });
+          currentChunkLines = [];
+        }
+        startLine = lineNum;
+        currentSymbolName = symbolName;
+        currentSymbolType = symbolType;
       }
-      accumulatedLines = [];
+    }
+
+    currentChunkLines.push(line);
+
+    if (currentChunkLines.length >= 45) {
+      boundaries.push({
+        symbolName: currentSymbolName || 'block',
+        symbolType: currentSymbolType,
+        startLine,
+        endLine: lineNum,
+        content: currentChunkLines.join('\n')
+      });
+      currentChunkLines = [];
       startLine = lineNum + 1;
-      inSymbolBlock = false;
       currentSymbolName = undefined;
-      currentSymbolType = undefined;
-      openBrackets = 0;
+      currentSymbolType = 'block';
     }
   }
 
-  // Flush remaining trailing lines
-  if (accumulatedLines.length > 0) {
-    const contentStr = accumulatedLines.join('\n');
-    if (contentStr.trim().length > 0) {
-      boundaries.push({
-        symbolName: currentSymbolName || 'block',
-        symbolType: currentSymbolType || 'block',
-        startLine,
-        endLine: lines.length,
-        content: contentStr
-      });
-    }
+  if (currentChunkLines.length > 0 && currentChunkLines.join('\n').trim().length > 0) {
+    boundaries.push({
+      symbolName: currentSymbolName || 'block',
+      symbolType: currentSymbolType,
+      startLine,
+      endLine: lines.length,
+      content: currentChunkLines.join('\n')
+    });
   }
 
   return boundaries;

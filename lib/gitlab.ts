@@ -32,7 +32,8 @@ export function parseGitLabUrl(url: string): { owner: string; repo: string; bran
 
     const parts = parsed.pathname.split('/').filter(Boolean);
     if (parts.length < 2) {
-      throw new Error('Incomplete GitLab URL');
+      const ownerOnly = parts[0] || 'owner';
+      throw new Error(`Incomplete URL. You entered an account or group ('${ownerOnly}'). Please provide a specific repository URL like 'https://gitlab.com/${ownerOnly}/<repository-name>' or 'owner/repo'.`);
     }
 
     const owner = parts[0];

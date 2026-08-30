@@ -336,10 +336,16 @@ export async function POST(req: NextRequest) {
        const elapsed = Date.now() - startTime;
        const skipLLM = elapsed > 240000;
  
-       // Map Phase: Evaluate each chunk with RAG-grounded dependency context
-       const chunkEvaluations = await Promise.all(
-         fileChunks.map(chunk => evaluateChunkWithRAG(chunk, tempRunId, undefined, skipLLM))
-       );
+       // Map Phase: Evaluate chunks in controlled batches (concurrency=3) to prevent Groq API rate limits (HTTP 429)
+       const chunkEvaluations: ChunkLLMEvaluation[] = [];
+       const batchSize = 3;
+       for (let i = 0; i < fileChunks.length; i += batchSize) {
+         const batch = fileChunks.slice(i, i + batchSize);
+         const batchResults = await Promise.all(
+           batch.map(chunk => evaluateChunkWithRAG(chunk, tempRunId, process.env.GROQ_API_KEY, skipLLM))
+         );
+         chunkEvaluations.push(...batchResults);
+       }
  
        // Reduce Phase (File Level): Rollup chunk evaluations to FileGrade
        const fileResult = reduceChunkEvaluationsToFileGrade(file.path, chunkEvaluations, file.content);

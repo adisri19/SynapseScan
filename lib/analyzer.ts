@@ -1,6 +1,8 @@
 import crypto from 'crypto';
+import OpenAI from 'openai';
 import { CodeChunk, DuplicationBlock, FileMetric, DebtCategories } from './types';
 import { retrieveRelevantChunks, formatRagContext } from './rag';
+import { sanitizeApiKey } from './reasoning-engine';
 
 export interface ChunkLLMEvaluation {
   chunkIndex: number;
@@ -8,11 +10,9 @@ export interface ChunkLLMEvaluation {
   maintainabilityScore: number; // 1 - 100
   complexityScore: number;       // 1 - 100
   securityScore: number;         // 1 - 100
-  refactoringPriorityScore: number; // 1 - 100
+  maxNestingDepth: number;       // 1 - 10+
   reasoning: string;
   identifiedIssues: string[];
-  primaryIssues: string[];
-  suggestedFixSummary: string;
 }
 
 export interface FileAnalysisResult {
@@ -53,16 +53,36 @@ CRITICAL INSTRUCTIONS:
    - maintainabilityScore (1 = unmaintainable, 100 = perfectly structured & clean)
    - complexityScore (1 = extremely high cognitive/cyclomatic complexity, 100 = clean & linear)
    - securityScore (1 = severe vulnerabilities present, 100 = highly secure & sanitized)
-2. Consider context from dependent/related chunks when analyzing symbols and imports.
-3. Output strictly valid JSON matching this schema:
+2. Evaluate maxNestingDepth:
+   - maxNestingDepth (integer count of deepest nested block/control-flow layer, e.g. 1 for linear functions, 5+ for deeply nested loops/conditionals)
+3. Consider context from dependent/related chunks when analyzing symbols and imports.
+4. Output strictly valid JSON matching this schema:
 {
   "maintainabilityScore": number,
   "complexityScore": number,
   "securityScore": number,
+  "maxNestingDepth": number,
   "reasoning": "Concise architectural explanation (2-3 sentences)",
   "identifiedIssues": ["Issue 1", "Issue 2"]
 }
 `;
+
+export function shouldEvaluateWithLLM(chunk: CodeChunk): boolean {
+  const content = chunk.content.trim();
+  const loc = content.split('\n').length;
+
+  if (loc <= 5 && !chunk.symbolName) return false;
+
+  const lines = content.split('\n').map(l => l.trim());
+  const isAllImports = lines.every(l => l.startsWith('import ') || l.startsWith('export ') || l === '' || l.startsWith('//') || l.startsWith('/*') || l.startsWith('*'));
+  if (isAllImports) return false;
+
+  if ((chunk.filePath.endsWith('.json') || chunk.filePath.endsWith('.yaml') || chunk.filePath.endsWith('.config.js') || chunk.filePath.endsWith('.config.ts')) && loc <= 25) {
+    return false;
+  }
+
+  return true;
+}
 
 /**
  * MAP PHASE: Evaluates an individual code chunk using LLM reasoning + RAG retrieved context
@@ -73,9 +93,12 @@ export async function evaluateChunkWithRAG(
   groqApiKey?: string,
   skipLLM?: boolean
 ): Promise<ChunkLLMEvaluation> {
-  if (skipLLM) {
+  const needsLLM = !skipLLM && shouldEvaluateWithLLM(chunk);
+
+  if (!needsLLM) {
     const loc = chunk.content.split('\n').length;
-    const nesting = (chunk.content.match(/\{/g) || []).length;
+    const indentDepths = chunk.content.split('\n').map(l => Math.floor((l.match(/^\s*/)?.[0].length || 0) / 2));
+    const nesting = Math.min(10, Math.max(1, Math.max(...indentDepths, 1)));
     const maintainability = Math.max(30, 95 - loc);
     const complexity = Math.max(20, 90 - nesting * 4);
     const security = chunk.content.includes('eval(') || chunk.content.includes('innerHTML') ? 40 : 88;
@@ -86,11 +109,9 @@ export async function evaluateChunkWithRAG(
       maintainabilityScore: maintainability,
       complexityScore: complexity,
       securityScore: security,
-      refactoringPriorityScore: 50,
-      reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${nesting}.`,
-      identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : [],
-      primaryIssues: [],
-      suggestedFixSummary: 'No suggested fix.'
+      maxNestingDepth: nesting,
+      reasoning: `Structural analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity depth ${nesting}.`,
+      identifiedIssues: nesting >= 5 ? ['High nesting depth detected'] : []
     };
   }
 
@@ -121,96 +142,50 @@ ${chunk.content}
 ${contextSnippet}
 `;
 
-  const geminiKey = process.env.GEMINI_API_KEY;
-  const apiKey = groqApiKey || process.env.GROQ_API_KEY || geminiKey;
+  const apiKey = sanitizeApiKey(groqApiKey || process.env.GROQ_API_KEY);
 
-  if (geminiKey) {
+  if (apiKey) {
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: {
-            parts: [{ text: CHUNK_EVALUATION_SYSTEM_PROMPT }]
-          },
-          contents: [{ role: 'user', parts: [{ text: promptText }] }],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: 'application/json'
-          }
-        })
+      const groqClient = new OpenAI({
+        apiKey,
+        baseURL: 'https://api.groq.com/openai/v1',
+        maxRetries: 3,
+        timeout: 25000
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        const contentStr = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (contentStr) {
-          const parsed = JSON.parse(contentStr);
-          return {
-            chunkIndex: chunk.chunkIndex,
-            filePath: chunk.filePath,
-            maintainabilityScore: Math.min(100, Math.max(1, Number(parsed.maintainabilityScore) || 75)),
-            complexityScore: Math.min(100, Math.max(1, Number(parsed.complexityScore) || 75)),
-            securityScore: Math.min(100, Math.max(1, Number(parsed.securityScore) || 85)),
-            refactoringPriorityScore: Math.min(100, Math.max(1, Number(parsed.refactoringPriorityScore) || 50)),
-            identifiedIssues: Array.isArray(parsed.primaryIssues) ? parsed.primaryIssues : (Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : []),
-            primaryIssues: Array.isArray(parsed.primaryIssues) ? parsed.primaryIssues : [],
-            suggestedFixSummary: parsed.suggestedFixSummary || 'Maintain modular structure.',
-            reasoning: parsed.reasoning || 'Grounded LLM evaluation.'
-          };
-        }
-      }
-    } catch (err) {
-      console.warn('Gemini chunk evaluation failed, trying Groq or local heuristics:', err);
-    }
-  }
-
-  if (apiKey && !geminiKey) {
-    try {
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: 'llama3-70b-8192',
-          messages: [
-            { role: 'system', content: CHUNK_EVALUATION_SYSTEM_PROMPT },
-            { role: 'user', content: promptText }
-          ],
-          temperature: 0.1,
-          response_format: { type: 'json_object' }
-        })
+      const completion = await groqClient.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: CHUNK_EVALUATION_SYSTEM_PROMPT },
+          { role: 'user', content: promptText }
+        ],
+        temperature: 0.1,
+        response_format: { type: 'json_object' }
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        const contentStr = data.choices?.[0]?.message?.content;
-        if (contentStr) {
-          const parsed = JSON.parse(contentStr);
-          return {
-            chunkIndex: chunk.chunkIndex,
-            filePath: chunk.filePath,
-            maintainabilityScore: Math.min(100, Math.max(1, Number(parsed.maintainabilityScore) || 75)),
-            complexityScore: Math.min(100, Math.max(1, Number(parsed.complexityScore) || 75)),
-            securityScore: Math.min(100, Math.max(1, Number(parsed.securityScore) || 85)),
-            refactoringPriorityScore: Math.min(100, Math.max(1, Number(parsed.refactoringPriorityScore) || 50)),
-            reasoning: parsed.reasoning || 'Evaluated via Map-Reduce AI engine.',
-            identifiedIssues: Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : [],
-            primaryIssues: Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : [],
-            suggestedFixSummary: 'Evaluated via Map-Reduce AI engine.'
-          };
-        }
+      const contentStr = completion.choices[0]?.message?.content;
+      if (contentStr) {
+        const parsed = JSON.parse(contentStr);
+        return {
+          chunkIndex: chunk.chunkIndex,
+          filePath: chunk.filePath,
+          maintainabilityScore: Math.min(100, Math.max(1, Number(parsed.maintainabilityScore) || 75)),
+          complexityScore: Math.min(100, Math.max(1, Number(parsed.complexityScore) || 75)),
+          securityScore: Math.min(100, Math.max(1, Number(parsed.securityScore) || 85)),
+          maxNestingDepth: Math.max(1, Number(parsed.maxNestingDepth) || 1),
+          reasoning: parsed.reasoning || 'Evaluated via Map-Reduce AI engine.',
+          identifiedIssues: Array.isArray(parsed.identifiedIssues) ? parsed.identifiedIssues : []
+        };
       }
-    } catch (err) {
-      console.warn('Groq LLM Map Evaluation error, falling back to deterministic AST heuristic:', err);
+    } catch (err: any) {
+      console.warn('[Groq OpenAI SDK Map Evaluation Warning]:', err?.message || err);
     }
   }
 
   // Fallback heuristic scoring if Groq API key is omitted or fails
   const loc = chunk.content.split('\n').length;
-  const nesting = (chunk.content.match(/\{/g) || []).length;
+  const indentDepths = chunk.content.split('\n').map(l => Math.floor((l.match(/^\s*/)?.[0].length || 0) / 2));
+  const nesting = Math.min(10, Math.max(1, Math.max(...indentDepths, 1)));
   const maintainability = Math.max(30, 95 - loc);
   const complexity = Math.max(20, 90 - nesting * 4);
   const security = chunk.content.includes('eval(') || chunk.content.includes('innerHTML') ? 40 : 88;
@@ -221,11 +196,9 @@ ${contextSnippet}
     maintainabilityScore: maintainability,
     complexityScore: complexity,
     securityScore: security,
-    refactoringPriorityScore: 50,
-    reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity factor ${nesting}.`,
-    identifiedIssues: nesting > 8 ? ['High nesting depth detected'] : [],
-    primaryIssues: nesting > 8 ? ['High nesting depth detected'] : [],
-    suggestedFixSummary: 'Maintain modular structure.'
+    maxNestingDepth: nesting,
+    reasoning: `Grounding analysis: ${chunk.symbolName || 'Block'} contains ${loc} lines with complexity depth ${nesting}.`,
+    identifiedIssues: nesting >= 5 ? ['High nesting depth detected'] : []
   };
 }
 
@@ -238,7 +211,9 @@ export function reduceChunkEvaluationsToFileGrade(
   fileContent: string
 ): FileAnalysisResult {
   const loc = fileContent.split('\n').length;
-  const nestingDepth = calculateNestingDepth(fileContent);
+  const nestingDepth = chunkEvaluations.length > 0 
+    ? Math.max(...chunkEvaluations.map(c => c.maxNestingDepth || 1))
+    : 1;
 
   if (chunkEvaluations.length === 0) {
     return {
@@ -247,53 +222,58 @@ export function reduceChunkEvaluationsToFileGrade(
       maxNestingDepth: nestingDepth,
       score: 'A',
       numericalScore: 90,
-      outdatedPatternsCount: 0,
+      outdatedPatternsCount: scanOutdatedPatterns(fileContent),
       priorityScore: 10,
       reviewStatus: 'passed',
-      recommendedAction: 'No action needed',
+      recommendedAction: 'Code structure matches quality guidelines.',
       chunkEvaluations: []
     };
   }
 
-  // Weighted average across maintainability (40%), complexity (35%), and security (25%)
-  const totalMaintainability = chunkEvaluations.reduce((sum, c) => sum + c.maintainabilityScore, 0);
-  const totalComplexity = chunkEvaluations.reduce((sum, c) => sum + c.complexityScore, 0);
-  const totalSecurity = chunkEvaluations.reduce((sum, c) => sum + c.securityScore, 0);
+  // Calculate weighted mean across all evaluated chunks for this file
+  const avgMaintainability = chunkEvaluations.reduce((acc, c) => acc + c.maintainabilityScore, 0) / chunkEvaluations.length;
+  const avgComplexity = chunkEvaluations.reduce((acc, c) => acc + c.complexityScore, 0) / chunkEvaluations.length;
+  const avgSecurity = chunkEvaluations.reduce((acc, c) => acc + c.securityScore, 0) / chunkEvaluations.length;
 
-  const avgM = totalMaintainability / chunkEvaluations.length;
-  const avgC = totalComplexity / chunkEvaluations.length;
-  const avgS = totalSecurity / chunkEvaluations.length;
+  // Composite numerical score calculation
+  const compositeScore = Math.round((avgMaintainability * 0.40) + (avgComplexity * 0.35) + (avgSecurity * 0.25));
 
-  const compositeScore = Math.round((avgM * 0.40) + (avgC * 0.35) + (avgS * 0.25));
+  let scoreLetter: 'A' | 'B' | 'C' | 'D' | 'F' = 'C';
+  let reviewStatus: 'passed' | 'flagged' | 'needs_refactor' = 'flagged';
+  let recommendedAction = 'Review module dependencies.';
 
-  let grade: 'A' | 'B' | 'C' | 'D' | 'F' = 'A';
-  if (compositeScore >= 85) grade = 'A';
-  else if (compositeScore >= 70) grade = 'B';
-  else if (compositeScore >= 55) grade = 'C';
-  else if (compositeScore >= 40) grade = 'D';
-  else grade = 'F';
+  if (compositeScore >= 85) {
+    scoreLetter = 'A';
+    reviewStatus = 'passed';
+    recommendedAction = 'Code matches highest quality standards.';
+  } else if (compositeScore >= 70) {
+    scoreLetter = 'B';
+    reviewStatus = 'passed';
+    recommendedAction = 'Minor maintainability adjustments recommended.';
+  } else if (compositeScore >= 55) {
+    scoreLetter = 'C';
+    reviewStatus = 'flagged';
+    recommendedAction = 'Sub-divide complex blocks and refactor conditionals.';
+  } else if (compositeScore >= 40) {
+    scoreLetter = 'D';
+    reviewStatus = 'needs_refactor';
+    recommendedAction = 'High priority refactoring required. High cognitive complexity.';
+  } else {
+    scoreLetter = 'F';
+    reviewStatus = 'needs_refactor';
+    recommendedAction = 'Critical risk. Immediate refactoring needed for security or maintenance.';
+  }
 
-  let reviewStatus: 'passed' | 'flagged' | 'needs_refactor' = 'passed';
-  if (grade === 'F' || grade === 'D') reviewStatus = 'flagged';
-  else if (grade === 'C') reviewStatus = 'needs_refactor';
-
-  const priorityScore = Math.round((100 - compositeScore) * 10 + loc * 0.5);
-
-  let recommendedAction = 'No action needed';
-  if (grade === 'F') recommendedAction = 'Immediate refactor required — high risk technical debt';
-  else if (grade === 'D') recommendedAction = 'Schedule refactor in upcoming sprint';
-  else if (grade === 'C') recommendedAction = 'Simplify cognitive complexity and abstract nested logic';
-  else if (grade === 'B') recommendedAction = 'Minor cleanups and documentation updates';
-
-  const outdatedPatternsCount = chunkEvaluations.reduce((sum, c) => sum + c.identifiedIssues.length, 0);
+  const outdatedCount = scanOutdatedPatterns(fileContent);
+  const priorityScore = Math.max(0, (100 - compositeScore) * 10 + (loc * 0.5) + (nestingDepth * 5));
 
   return {
     filePath,
     linesOfCode: loc,
     maxNestingDepth: nestingDepth,
-    score: grade,
+    score: scoreLetter,
     numericalScore: compositeScore,
-    outdatedPatternsCount,
+    outdatedPatternsCount: outdatedCount,
     priorityScore,
     reviewStatus,
     recommendedAction,
@@ -301,63 +281,88 @@ export function reduceChunkEvaluationsToFileGrade(
   };
 }
 
-/**
- * REDUCE PHASE (Repository Level): Aggregates all file analysis results into final OverallRepositoryScore
- */
-export function reduceFileResultsToRepositoryScore(
-  fileResults: FileAnalysisResult[],
-  duplicationRate = 0
+export function scanOutdatedPatterns(code: string): number {
+  let count = 0;
+  const varMatches = code.match(/\bvar\s+/g);
+  if (varMatches) count += varMatches.length;
+
+  const logMatches = code.match(/console\.log\(/g);
+  if (logMatches) count += logMatches.length;
+
+  const callbackMatches = code.match(/callback\(/g);
+  if (callbackMatches) count += callbackMatches.length;
+
+  return count;
+}
+
+export function scoreCodebase(
+  files: Array<{ path: string; content: string }>,
+  fileResults?: FileAnalysisResult[]
 ): ScorecardResult {
-  const totalLoc = fileResults.reduce((sum, f) => sum + f.linesOfCode, 0);
-  const totalPriorityScore = fileResults.reduce((sum, f) => sum + f.priorityScore, 0);
+  const fileMetrics: FileMetric[] = [];
+  let totalLoc = 0;
+  let totalNesting = 0;
 
-  const avgNumericalScore = fileResults.length > 0
-    ? fileResults.reduce((sum, f) => sum + f.numericalScore, 0) / fileResults.length
-    : 90;
+  files.forEach(file => {
+    const loc = file.content.split('\n').length;
+    totalLoc += loc;
 
-  const avgComplexity = fileResults.length > 0
-    ? fileResults.reduce((sum, f) => sum + f.maxNestingDepth, 0) / fileResults.length
-    : 0;
+    const fileResult = fileResults?.find(r => r.filePath === file.path);
+    const nesting = fileResult ? fileResult.maxNestingDepth : 1;
+    const score = fileResult ? fileResult.score : 'A';
+    const outdatedCount = scanOutdatedPatterns(file.content);
+    const priorityScore = fileResult ? fileResult.priorityScore : (loc * (nesting * 3.0) + (outdatedCount * 2.0));
+    const recommendedAction = fileResult ? fileResult.recommendedAction : 'Review structure';
+
+    totalNesting += nesting;
+
+    fileMetrics.push({
+      filePath: file.path,
+      linesOfCode: loc,
+      maxNestingDepth: nesting,
+      score,
+      outdatedPatternsCount: outdatedCount,
+      priorityScore,
+      reviewStatus: fileResult ? fileResult.reviewStatus : (priorityScore > 200 ? 'needs_refactor' : 'passed'),
+      recommendedAction
+    });
+  });
+
+  const avgComplexity = files.length > 0 ? Number((totalNesting / files.length).toFixed(1)) : 1.0;
+  const duplications = detectDuplications(files);
+  const totalDuplicatedLines = duplications.reduce((sum, d) => sum + (d.lineCount * d.fileOccurrences.length), 0);
+  const duplicationRate = totalLoc > 0 ? Number(((totalDuplicatedLines / totalLoc) * 100).toFixed(1)) : 0.0;
 
   let overallGrade: 'A' | 'B' | 'C' | 'D' | 'F' = 'A';
-  if (avgNumericalScore >= 85) overallGrade = 'A';
-  else if (avgNumericalScore >= 70) overallGrade = 'B';
-  else if (avgNumericalScore >= 55) overallGrade = 'C';
-  else if (avgNumericalScore >= 40) overallGrade = 'D';
-  else overallGrade = 'F';
+  if (fileResults && fileResults.length > 0) {
+    const avgNumerical = fileResults.reduce((acc, r) => acc + r.numericalScore, 0) / fileResults.length;
+    if (avgNumerical >= 85) overallGrade = 'A';
+    else if (avgNumerical >= 70) overallGrade = 'B';
+    else if (avgNumerical >= 55) overallGrade = 'C';
+    else if (avgNumerical >= 40) overallGrade = 'D';
+    else overallGrade = 'F';
+  } else {
+    if (avgComplexity > 8 || duplicationRate > 25) overallGrade = 'F';
+    else if (avgComplexity > 6 || duplicationRate > 18) overallGrade = 'D';
+    else if (avgComplexity > 4 || duplicationRate > 12) overallGrade = 'C';
+    else if (avgComplexity > 2.5 || duplicationRate > 6) overallGrade = 'B';
+  }
 
-  const estimatedDebtHours = Math.round(totalPriorityScore / 250);
+  const estimatedDebtHours = Math.round((totalLoc * 0.08) + (avgComplexity * 12) + (duplications.length * 4));
 
-  const securityMetric = Math.min(100, fileResults.filter(f => f.score === 'D' || f.score === 'F').length * 20);
-  const maintainabilityMetric = Math.min(100, Math.round((100 - avgNumericalScore) * 1.2));
-
+  const totalIssueWeight = Math.max(1, fileMetrics.reduce((sum, f) => sum + f.priorityScore, 0));
   const debtCategories: DebtCategories = {
-    security: parseFloat(securityMetric.toFixed(2)),
-    maintainability: parseFloat(maintainabilityMetric.toFixed(2)),
-    duplication: parseFloat(Math.min(100, duplicationRate).toFixed(2)),
-    coverage: 0
+    maintainability: Math.min(100, Math.round((totalLoc / totalIssueWeight) * 40)),
+    security: Math.min(100, Math.round((avgComplexity / 10) * 30)),
+    duplication: Math.min(100, Math.round(duplicationRate * 2)),
+    coverage: 25
   };
-
-  const fileMetrics: FileMetric[] = fileResults.map(f => ({
-    id: '',
-    runId: '',
-    filePath: f.filePath,
-    linesOfCode: f.linesOfCode,
-    maxNestingDepth: f.maxNestingDepth,
-    score: f.score,
-    outdatedPatternsCount: f.outdatedPatternsCount,
-    priorityScore: f.priorityScore,
-    reviewStatus: f.reviewStatus,
-    recommendedAction: f.recommendedAction
-  }));
-
-  fileMetrics.sort((a, b) => b.priorityScore - a.priorityScore);
 
   return {
     overallGrade,
     totalLoc,
-    avgComplexity: parseFloat(avgComplexity.toFixed(2)),
-    duplicationRate: parseFloat(duplicationRate.toFixed(2)),
+    avgComplexity,
+    duplicationRate,
     estimatedDebtHours,
     debtCategories,
     files: fileMetrics,
@@ -365,123 +370,36 @@ export function reduceFileResultsToRepositoryScore(
   };
 }
 
-/**
- * Legacy AST Nesting Depth Helper preserved for structural fallback calculations
- */
-export function calculateNestingDepth(code: string): number {
-  const cleanCode = code
-    .replace(/\/\/[^\n]*/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '');
-
-  let maxDepth = 0;
-  let currentDepth = 0;
-
-  for (let i = 0; i < cleanCode.length; i++) {
-    const char = cleanCode[i];
-    if (char === '{') {
-      currentDepth++;
-      if (currentDepth > maxDepth) {
-        maxDepth = currentDepth;
-      }
-    } else if (char === '}') {
-      currentDepth--;
-    }
-  }
-
-  return maxDepth;
-}
-
 export function detectDuplications(files: Array<{ path: string; content: string }>): DuplicationBlock[] {
   const windowSize = 5;
   const hashToOccurrences: Record<string, Array<{ filePath: string; startLine: number }>> = {};
 
-  for (const file of files) {
+  files.forEach(file => {
     const lines = file.content.split('\n');
-    const lineMap: number[] = [];
-    const normalizedLines: string[] = [];
+    if (lines.length < windowSize) return;
 
-    for (let i = 0; i < lines.length; i++) {
-      const trimmed = lines[i].trim();
-      if (trimmed !== '') {
-        normalizedLines.push(trimmed);
-        lineMap.push(i + 1);
-      }
-    }
+    for (let i = 0; i <= lines.length - windowSize; i++) {
+      const windowStr = lines.slice(i, i + windowSize).map(l => l.trim()).join('\n');
+      if (windowStr.length < 20) continue;
 
-    if (normalizedLines.length < windowSize) continue;
-
-    for (let i = 0; i <= normalizedLines.length - windowSize; i++) {
-      const window = normalizedLines.slice(i, i + windowSize).join('\n');
-      const hash = crypto.createHash('md5').update(window).digest('hex');
-
+      const hash = crypto.createHash('md5').update(windowStr).digest('hex');
       if (!hashToOccurrences[hash]) {
         hashToOccurrences[hash] = [];
       }
-
-      hashToOccurrences[hash].push({
-        filePath: file.path,
-        startLine: lineMap[i]
-      });
+      hashToOccurrences[hash].push({ filePath: file.path, startLine: i + 1 });
     }
-  }
+  });
 
-  const duplications: DuplicationBlock[] = [];
-
-  for (const [hash, occurrences] of Object.entries(hashToOccurrences)) {
-    if (occurrences.length >= 2) {
-      duplications.push({
-        runId: '',
+  const duplicationBlocks: DuplicationBlock[] = [];
+  Object.entries(hashToOccurrences).forEach(([hash, occurrences]) => {
+    if (occurrences.length > 1) {
+      duplicationBlocks.push({
         blockHash: hash,
         lineCount: windowSize,
         fileOccurrences: occurrences
       });
     }
-  }
-
-  return duplications;
-}
-
-export function scanOutdatedPatterns(code: string): number {
-  let count = 0;
-  const varMatches = code.match(/\bvar\s+/g);
-  if (varMatches) count += varMatches.length;
-  const consoleMatches = code.match(/console\.log\s*\(/g);
-  if (consoleMatches) count += consoleMatches.length;
-  const callbackReg = /\bcallback\b.*function|function.*\bcallback\b/gi;
-  const callbackMatches = code.match(callbackReg);
-  if (callbackMatches) count += callbackMatches.length;
-  return count;
-}
-
-export function scoreCodebase(
-  files: Array<{ path: string; loc: number; nestingDepth: number; outdatedCount: number }>,
-  duplicationRate: number = 0
-): ScorecardResult {
-  const dummyResults: FileAnalysisResult[] = files.map(f => {
-    const depthPenalty = Math.min(40, f.nestingDepth * 8);
-    const outdatedPenalty = Math.min(20, f.outdatedCount * 5);
-    const numScore = Math.max(20, 95 - depthPenalty - outdatedPenalty);
-
-    let grade: 'A' | 'B' | 'C' | 'D' | 'F' = 'A';
-    if (numScore >= 85) grade = 'A';
-    else if (numScore >= 70) grade = 'B';
-    else if (numScore >= 55) grade = 'C';
-    else if (numScore >= 40) grade = 'D';
-    else grade = 'F';
-
-    return {
-      filePath: f.path,
-      linesOfCode: f.loc,
-      maxNestingDepth: f.nestingDepth,
-      score: grade,
-      numericalScore: numScore,
-      outdatedPatternsCount: f.outdatedCount,
-      priorityScore: Math.round((100 - numScore) * 10 + f.loc * 0.5),
-      reviewStatus: grade === 'F' || grade === 'D' ? 'flagged' : grade === 'C' ? 'needs_refactor' : 'passed',
-      recommendedAction: grade === 'F' ? 'Immediate refactor required' : 'Maintain module',
-      chunkEvaluations: []
-    };
   });
 
-  return reduceFileResultsToRepositoryScore(dummyResults, duplicationRate);
+  return duplicationBlocks.slice(0, 10);
 }

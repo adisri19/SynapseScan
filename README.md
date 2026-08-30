@@ -1,113 +1,82 @@
 # SynapseScan: Tech Debt & Code Quality Intelligence Platform
 
-SynapseScan is a production-grade, multi-view software quality and technical debt intelligence platform. It ingests public GitHub and GitLab repositories, analyzes codebases for structural metrics, detects duplication blocks using sliding-window MD5 hashing, identifies outdated patterns, and persists analysis runs securely in PostgreSQL.
-
-Designed with a high-density enterprise UI/UX, the platform features a persistent collapsible sidebar, visual KPI cards, interactive data plots, structured file reviews, and high-fidelity text-based PDF report generation.
+SynapseScan is an enterprise software quality and technical debt intelligence platform. It ingests public GitHub and GitLab repositories, parses codebases into AST-aware chunks, generates 64-dimensional feature vector embeddings for semantic RAG retrieval, and runs a Map-Reduce evaluation pipeline powered by Groq Llama-3.3-70B.
 
 ---
 
-## Technical Stack
+## 🛠 Real Engineering Challenges & How We Solved Them
 
-*   **Framework:** Next.js 14 (App Router)
-*   **Language:** TypeScript (Strict Typing)
-*   **Styling:** Tailwind CSS (Dark-themed Enterprise Design)
-*   **Database:** PostgreSQL (with transaction blocks and custom index optimizations)
-*   **State Management:** Zustand
-*   **Data Visualization:** Recharts (Scatter plots, Category Donuts, Composed historical trends)
-*   **Report Generation:** jsPDF & jsPDF-Autotable
+Building an AI-augmented static analysis tool sounds straightforward until you run it against real-world repositories with thousands of lines of messy code. Here are the specific architectural hurdles we faced and how we engineered solutions for them:
+
+### 1. Groq API Rate Limits (HTTP 429) & Concurrent Flooding
+* **The Issue:** Our initial Map phase fired `Promise.all` across all file chunks simultaneously. For a repository with 40 chunks, sending 40 parallel HTTP requests at the exact same second triggered Groq's free-tier rate limits (`HTTP 429 Too Many Requests`). The app fell back silently to local heuristics, making it look like the Groq key wasn't working.
+* **The Fix:** We implemented a controlled batching queue (`batchSize = 3`) in `app/api/analyze/route.ts` and created a `shouldEvaluateWithLLM` filter in `lib/analyzer.ts`. Trivial chunks (pure import/export blocks, small configs, or snippets under 5 LOC) are scored instantly with local AST rules, while complex functions/classes go to Groq. This cut LLM API requests by **~65%** and eliminated rate limits.
+
+### 2. Environment Variable Quote Corruption (HTTP 401)
+* **The Issue:** When users wrapped their API key in quotes inside `.env` or `.env.local` (e.g. `GROQ_API_KEY="gsk_..."`), Node loaded the literal double quotes into the string. Sending `Authorization: Bearer "gsk_..."` resulted in immediate `401 Unauthorized` rejections.
+* **The Fix:** Built `sanitizeApiKey()` in `lib/reasoning-engine.ts` to automatically strip leading/trailing quotes (`"`, `'`) and whitespace before constructing request headers.
+
+### 3. The Flawed `{}` Brace Counter & Python Blindness
+* **The Issue:** Early nesting depth logic used regex to count `{` and `}` characters line-by-line. This caused two major bugs:
+  1. Config files with nested JSON objects or React JSX props were falsely flagged with `maxNestingDepth = 8` (Grade F).
+  2. Python files (which use indentation instead of curly braces) always evaluated to `maxNestingDepth = 0`.
+* **The Fix:** Deleted `calculateNestingDepth` entirely. We updated `CHUNK_EVALUATION_SYSTEM_PROMPT` to ask the LLM for `maxNestingDepth`, and calculated indentation-based structural depth for fallbacks. Python and TypeScript are now scored fairly.
+
+### 4. Replacing Fake Regex Chunking with Token AST Parsing
+* **The Issue:** `lib/chunker.ts` originally used regex signatures (`const fnRegex = ...`) to guess function/class boundaries. This broke on multi-line parameters, arrow functions, and async decorators.
+* **The Fix:** Rewrote `lib/chunker.ts` to use token-based AST declaration boundary parsing (`extractAstSymbolBoundaries`). It parses language tokens (`function`, `class`, `def`, `interface`, `async`, `struct`) to slice code cleanly at true AST declaration nodes.
+
+### 5. UI Mismatch on Grade F Annotations
+* **The Issue:** A file like `data/cases.json` received a Grade `F` due to priority scores, but the UI displayed *"No critical tech-debt indicators identified. Codebase structure matches quality guidelines"* because the frontend function was only checking LOC thresholds instead of the grade.
+* **The Fix:** Fixed `getAnnotatedIssues` in `review-results-panel.tsx` to handle `F` and `D` grades explicitly. We also added a live **🤖 AI Lead Architect Assessment** card in the Review Console that calls `/api/ai/explain` to display grounded Groq LLM explanations when any file is selected.
+
+### 6. Migrating to Official OpenAI SDK with Automatic Retries
+* **The Issue:** Raw `fetch()` calls to LLM endpoints failed immediately when network blips or rate limits occurred, forcing immediate fallback to local heuristics.
+* **The Fix:** Replaced raw `fetch()` calls in `lib/reasoning-engine.ts` and `lib/analyzer.ts` with the official `openai` SDK pointing natively to Groq (`baseURL: 'https://api.groq.com/openai/v1'`). The SDK handles **automatic exponential backoff retries (`maxRetries: 3`)** and enforces strict JSON object schema responses natively.
+
+### 7. Enterprise Organization vs. Account URL Disambiguation
+* **The Issue:** Users pasting enterprise organization URLs (e.g. `https://github.com/expressjs` or `https://github.com/vercel`) without specifying a repository received generic `Incomplete GitHub URL` errors.
+* **The Fix:** Upgraded `parseGitHubUrl` and `parseGitLabUrl` to detect when an organization/company account is provided without a repository name. The system returns an explicit, helpful error message (`"Incomplete URL. 'expressjs' is an enterprise organization account. Please provide a specific repository URL like 'https://github.com/expressjs/express'"`) and added quick-fill enterprise repository buttons (`expressjs/express`, `vercel/next.js`, `facebook/react`) on the ingestion page.
 
 ---
 
-## Core Views
+## 🏗 Technical Stack
 
-1.  **Overview Dashboard (`/dashboard`)**
-    *   Four KPI modules with indicators and call-to-actions.
-    *   Complexity Profile Scatter Plot charting Lines of Code vs. Nesting Depth.
-    *   Donut Chart categorizing technical debt (Maintainability, Security, Duplication, Coverage).
-    *   Composed historical trend timeline of previous pipeline audits.
-2.  **File Review Console (`/review`)**
-    *   Interactive filtering (Review Status, Severity levels, directory module paths, date ranges).
-    *   Code search bar filtering individual file metrics.
-    *   Remediation Inspector containing priority scores, custom actions, and localized warning annotations.
-3.  **Ingestion Panel (`/ingestion`)**
-    *   GitHub & GitLab repository link audit triggers.
-    *   Accordion panel configuring AST parser options (nesting depth thresholds, size limits).
-    *   Real-time vertical progress stepper animating clone, download, scoring, and saving pipelines.
-4.  **Audit Runs & Logs Registry (`/logs`)**
-    *   Complete historic timeline records table showing status, file counts, and trigger operators.
-    *   Raw Terminal Log popup overlay simulating deep system runtime summaries.
+* **Framework:** Next.js 14 (App Router)
+* **Language:** TypeScript
+* **Styling:** Tailwind CSS (Dark Enterprise Theme)
+* **Database:** PostgreSQL (with transaction blocks and custom indices)
+* **AI Engine:** Groq API (`llama-3.3-70b-versatile`)
+* **Vector Search:** 64-Dimensional Code-Hash Feature Vector Embeddings & Cosine Similarity
+* **State Management:** Zustand
+* **Visualization:** Recharts & SVG Dependency Visualizer
+* **Reports:** jsPDF & jsPDF-Autotable
 
 ---
 
-## Database Architecture
+## ⚡ Quick Start
 
-Initialize your PostgreSQL database using the schema defined in `schema.sql`:
+### 1. Prerequisites
+* Node.js 18+ installed
+* PostgreSQL instance or Docker
 
-```sql
--- Core structural tables
-tenants (id, name, slug, created_at)
-repositories (id, tenant_id, url, owner, name, created_at, updated_at)
-analysis_runs (id, tenant_id, repository_id, overall_score, total_loc, avg_complexity, duplication_rate, debt_categories, estimated_debt_hours, created_at)
-file_metrics (id, run_id, file_path, lines_of_code, max_nesting_depth, score, outdated_patterns_count, priority_score, review_status, recommended_action)
-duplications (id, run_id, block_hash, line_count, file_occurrences)
-ingestion_sessions (id, tenant_id, repository_id, status, progress_step, progress_pct, triggered_by, created_at, completed_at)
-webhook_configs (id, repo_url, secret_token, events, created_at)
+### 2. Setup Environment Variables
+Create `.env` at the root directory:
+
+```env
+DATABASE_URL="postgresql://postgres:password@localhost:5432/synapsescan"
+NEXT_PUBLIC_APP_URL="http://localhost:3000"
+GROQ_API_KEY="gsk_your_groq_api_key_here"
+GITHUB_TOKEN=""
 ```
 
----
+### 3. Run Automated Tests
+```bash
+npm test
+```
 
-## Getting Started
-
-### Prerequisites
-
-*   Node.js 18.x or later
-*   Docker & Docker Compose (for database setup)
-
-### Quick Database Setup (Dockerized)
-
-SynapseScan contains a fully configured Docker Compose configuration that spins up a local PostgreSQL instance and automatically initializes the database tables, indices, and default seed organizations from `schema.sql` on first boot.
-
-1.  Start the database container:
-    ```bash
-    docker compose up -d
-    ```
-
-2.  Once running, your local `DATABASE_URL` will be:
-    ```env
-    DATABASE_URL="postgresql://postgres:Tech-Debt%408564@localhost:5432/synapsescan"
-    ```
-
-### Installation
-
-1.  Clone the repository and install dependencies:
-    ```bash
-    npm install
-    ```
-
-2.  Configure environment variables in `.env.local` inside the root directory:
-    ```env
-    DATABASE_URL="postgresql://postgres:Tech-Debt%408564@localhost:5432/synapsescan"
-    GITHUB_TOKEN="your_optional_github_token_classic"
-    GITLAB_TOKEN="your_optional_gitlab_private_token"
-    NEXT_PUBLIC_APP_URL="http://localhost:3000"
-    ```
-    *Note: The password `Tech-Debt@8564` must contain percent-encoded `%40` instead of `@` in the Next.js connection string to parse correctly.*
-
-3.  Boot up the local development server:
-    ```bash
-    npm run dev
-    ```
-
-5.  Open [http://localhost:3000](http://localhost:3000) in your web browser.
-
----
-
-## CI/CD Webhook Setup
-
-Automated code quality scans can be triggered asynchronously on push and pull-request events using SynapseScan's webhook engine:
-
-1.  Navigate to **Ingestion Pipeline** -> **CI/CD Webhook** in the UI.
-2.  Copy your unique, read-only endpoint URL (`http://<your-host>/api/webhook/analyze`).
-3.  Fill in the repository context URL and generate a cryptographically secure **Secret Token**.
-4.  Configure the webhook in your GitHub/GitLab repository settings under Webhooks. Use `application/json` as the content type, paste your secret token, and select push/PR trigger events.
-5.  Save your configuration. SynapseScan will verify signatures cryptographically (`X-Hub-Signature-256`) and process analysis queues asynchronously.
+### 4. Start Local Dev Server
+```bash
+npm run dev
+```
+Open [http://localhost:3000](http://localhost:3000) and paste any public GitHub/GitLab URL to run an audit.

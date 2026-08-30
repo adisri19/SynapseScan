@@ -29,9 +29,6 @@ export async function POST(req: NextRequest) {
     });
 
     let explanation = reasoningResult.text;
-    if (explanation.length > 220) {
-      explanation = explanation.slice(0, 217) + '...';
-    }
 
     return NextResponse.json({ 
       success: true, 

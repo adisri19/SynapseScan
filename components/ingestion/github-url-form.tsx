@@ -26,11 +26,11 @@ export function GitHubUrlForm({ onSubmit, isLoading, error }: GitHubUrlFormProps
           </label>
           <div className="flex flex-col sm:flex-row gap-3">
             <input
-              type="url"
+              type="text"
               id="repoUrl"
               value={repoUrl}
               onChange={(e) => setRepoUrl(e.target.value)}
-              placeholder="https://github.com/owner/repo"
+              placeholder="https://github.com/owner/repo or owner/repo"
               required
               disabled={isLoading}
               className="flex-1 bg-[#0B0F17] border border-[#1F2937] text-white placeholder-slate-600 rounded-lg px-4 py-3 font-mono text-sm focus:border-[#10B981] focus:ring-1 focus:ring-[#10B981] outline-none transition disabled:opacity-50"
@@ -38,7 +38,7 @@ export function GitHubUrlForm({ onSubmit, isLoading, error }: GitHubUrlFormProps
             <button
               type="submit"
               disabled={isLoading || !repoUrl}
-              className="bg-[#10B981] hover:bg-emerald-400 active:bg-emerald-600 disabled:bg-slate-800 disabled:text-slate-500 transition duration-150 px-6 py-3 rounded-lg font-semibold text-sm tracking-wide shadow-lg shadow-emerald-950/20 flex items-center justify-center gap-2"
+              className="bg-[#10B981] hover:bg-emerald-400 active:bg-emerald-600 disabled:bg-slate-800 disabled:text-slate-500 transition duration-150 px-6 py-3 rounded-lg font-semibold text-sm tracking-wide shadow-lg shadow-emerald-950/20 flex items-center justify-center gap-2 cursor-pointer"
             >
               {isLoading ? (
                 <>
@@ -56,6 +56,33 @@ export function GitHubUrlForm({ onSubmit, isLoading, error }: GitHubUrlFormProps
                   <span>Run Repository Audit</span>
                 </>
               )}
+            </button>
+          </div>
+
+          <div className="mt-2.5 flex items-center gap-2 flex-wrap text-[11px] font-mono text-slate-500">
+            <span>Supports Enterprise Orgs & Personal Repos (<code className="text-slate-400">org/repo</code>). Try:</span>
+            <button
+              type="button"
+              onClick={() => setRepoUrl('https://github.com/expressjs/express')}
+              className="hover:text-[#10B981] underline cursor-pointer"
+            >
+              expressjs/express
+            </button>
+            <span>•</span>
+            <button
+              type="button"
+              onClick={() => setRepoUrl('https://github.com/vercel/next.js')}
+              className="hover:text-[#10B981] underline cursor-pointer"
+            >
+              vercel/next.js
+            </button>
+            <span>•</span>
+            <button
+              type="button"
+              onClick={() => setRepoUrl('https://github.com/facebook/react')}
+              className="hover:text-[#10B981] underline cursor-pointer"
+            >
+              facebook/react
             </button>
           </div>
         </div>
