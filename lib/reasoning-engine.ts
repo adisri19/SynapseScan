@@ -18,6 +18,11 @@ export interface ReasoningResult {
   error?: string;
 }
 
+export function sanitizeApiKey(key?: string): string {
+  if (!key) return '';
+  return key.trim().replace(/^["']|["']$/g, '').trim();
+}
+
 /**
  * Shared Groq Reasoning Engine Singleton.
  * Uses Groq API (or grounded fallback if Groq API key is missing) to produce strictly code-grounded explanations.
@@ -44,7 +49,7 @@ export class GroqReasoningEngine {
     const systemPrompt = systemPromptOverride || this.getSystemPrompt(taskType);
 
     // 3. Check for GROQ API KEY in environment
-    const apiKey = process.env.GROQ_API_KEY;
+    const apiKey = sanitizeApiKey(process.env.GROQ_API_KEY);
 
     if (!apiKey) {
       // Fallback deterministic response when GROQ_API_KEY is not configured
@@ -78,13 +83,14 @@ export class GroqReasoningEngine {
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.warn('Groq API call returned error status:', response.status, errorText);
+        console.warn(`[Groq AI Engine Warning] API call returned error status ${response.status}:`, errorText);
         return {
           success: true,
           text: this.generateGroundedFallback(taskType, context),
           modelUsed: 'groq-fallback',
           retrievedChunksCount: context.relevantChunks.length,
-          groundedEvidence: evidenceText
+          groundedEvidence: evidenceText,
+          error: `Groq API Error ${response.status}: ${errorText}`
         };
       }
 
